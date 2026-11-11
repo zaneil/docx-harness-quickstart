@@ -21,7 +21,7 @@ from .ooxml import INS
 @dataclass
 class EditContext:
     track_changes: bool = False
-    author: str = "word-agent"
+    author: str = "docx-harness"
 
     def __post_init__(self) -> None:
         if self.track_changes:

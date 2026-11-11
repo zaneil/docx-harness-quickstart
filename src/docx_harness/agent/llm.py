@@ -88,7 +88,7 @@ class OpenRouterClient(OpenAICompatibleClient):
     """OpenRouter through the ``openai`` SDK.
 
     The key comes from ``api_key`` or ``OPENROUTER_API_KEY``; the model from
-    ``model``, ``WORD_AGENT_MODEL`` or the default ``openai/gpt-4.1-mini``.
+    ``model``, ``DOCX_HARNESS_MODEL`` or the default ``openai/gpt-4.1-mini``.
     """
 
     def __init__(self, model: str | None = None, api_key: str | None = None, **kwargs: Any):
@@ -99,7 +99,7 @@ class OpenRouterClient(OpenAICompatibleClient):
                 "or pass api_key=..."
             )
         super().__init__(
-            model or os.environ.get("WORD_AGENT_MODEL") or DEFAULT_MODEL,
+            model or os.environ.get("DOCX_HARNESS_MODEL") or DEFAULT_MODEL,
             api_key=api_key,
             base_url=kwargs.pop("base_url", OPENROUTER_BASE_URL),
             **kwargs,

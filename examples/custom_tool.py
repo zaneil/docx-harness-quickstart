@@ -8,7 +8,7 @@ import datetime
 
 from dotenv import load_dotenv
 
-from word_agent import WordDocument, create_agent, tool
+from docx_harness import WordDocument, create_agent, tool
 
 load_dotenv()
 doc = WordDocument.open()

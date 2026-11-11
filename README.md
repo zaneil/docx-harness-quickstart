@@ -1,20 +1,31 @@
-# word-agent
+# docx-harness-quickstart
 
-An open source Python SDK for building LLM agents that draft and edit Microsoft Word (`.docx`) documents.
+A starter kit for building LLM agents that draft and edit Microsoft Word (`.docx`) documents in Python. Clone it, point your coding agent at it, and adapt it.
 
-A `.docx` file is a zip archive of XML. word-agent unzips it into an in-memory abstraction, exposes that abstraction to a model as tools (read, insert, update, delete, style), and ships a small agent harness to run the loop. Each of the three layers is usable on its own, so you can bring your own harness, add your own tools, or both.
+A `.docx` file is a zip archive of XML. docx-harness unzips it into an in-memory abstraction, exposes that abstraction to a model as tools (read, insert, update, delete, style), and ships a small agent harness to run the loop. Each of the three layers is usable on its own, so you can bring your own harness, add your own tools, or both.
 
 > Not affiliated with or endorsed by Microsoft. "Microsoft Word" is a trademark of Microsoft Corporation.
+
+## For coding agents
+
+If you are a coding agent (or are handing this repo to one), read [`AGENTS.md`](AGENTS.md) first. It has the commands, a task-to-file map, a minimal usage snippet for each layer, and the rules that keep generated documents valid. `CLAUDE.md` points to the same file.
+
+- Everything is verifiable offline: `uv sync && uv run pytest` takes about 3 seconds and needs no API key.
+- The package is `docx_harness` under `src/`; the layers depend one way only: `agent` → `tools` → `document`.
+- Prompts that work well as a starting point:
+  - "Read AGENTS.md, then add a tool that inserts an image after a given block, with tests."
+  - "Read AGENTS.md, then replace the built-in harness with my LangGraph agent, keeping the default tools."
+  - "Read AGENTS.md, then implement tracked changes in `document/edits.py`."
 
 ## Install
 
 ```bash
-git clone https://github.com/zaneil/word-agent && cd word-agent
+git clone https://github.com/zaneil/docx-harness-quickstart && cd docx-harness-quickstart
 uv sync                      # or: pip install -e .
 cp .env.example .env         # then add your OpenRouter key
 ```
 
-Models are reached through [OpenRouter](https://openrouter.ai) using the `openai` SDK. The default model is `openai/gpt-4.1-mini`; set `WORD_AGENT_MODEL` or pass `model=` to use any other.
+Models are reached through [OpenRouter](https://openrouter.ai) using the `openai` SDK. The default model is `openai/gpt-4.1-mini`; set `DOCX_HARNESS_MODEL` or pass `model=` to use any other.
 
 ## Quickstart
 
@@ -22,20 +33,20 @@ Command line:
 
 ```bash
 # New document, started from the bundled template
-uv run word-agent "Draft a one page project proposal with a title, three sections and a budget table" -o proposal.docx
+uv run docx-harness "Draft a one page project proposal with a title, three sections and a budget table" -o proposal.docx
 
 # Edit an existing document
-uv run word-agent "Tighten the introduction and make every heading dark blue" -i proposal.docx -o proposal-v2.docx
+uv run docx-harness "Tighten the introduction and make every heading dark blue" -i proposal.docx -o proposal-v2.docx
 
 # Plan mode: the agent inspects the document, proposes a plan, and changes nothing until you approve
-uv run word-agent "Restructure this into an executive summary plus appendix" -i report.docx -o report-v2.docx --plan
+uv run docx-harness "Restructure this into an executive summary plus appendix" -i report.docx -o report-v2.docx --plan
 ```
 
 Python:
 
 ```python
 from dotenv import load_dotenv
-from word_agent import draft
+from docx_harness import draft
 
 load_dotenv()
 result = draft("Write a short memo announcing the office move", output_path="memo.docx")
@@ -48,7 +59,7 @@ draft("Fix the typos and add a summary table", "memo.docx", "memo-v2.docx", plan
 ### Chat UI for testing
 
 ```bash
-uv run word-agent-ui        # opens http://127.0.0.1:8765
+uv run docx-harness-ui        # opens http://127.0.0.1:8765
 ```
 
 A small local page with a chat on the left and a live preview of the document on the right. Start from the blank template or upload a `.docx`, keep chatting to refine it (the conversation and block ids carry over between messages), tick **Plan first** to review a plan before anything changes, and download the result. It is a test tool: one in-memory session, standard library only, bound to localhost. The preview is approximate; open the downloaded file in Word for the real rendering.
@@ -76,7 +87,7 @@ To continue a conversation in your own code, pass the previous result's messages
 `WordPackage` is the unzipped file: every part in memory, XML parsed on demand, unmodified parts written back byte for byte. `WordDocument` sits on top and presents the body as an ordered list of **blocks** (paragraphs and tables) with stable ids.
 
 ```python
-from word_agent import WordDocument
+from docx_harness import WordDocument
 
 doc = WordDocument.open()                       # bundled template; or WordDocument.open("in.docx")
 title = doc.insert_paragraph("Q3 Report", "Title")
@@ -122,7 +133,7 @@ Tool schemas are in OpenAI function-calling format. Tool errors are returned to 
 ### Add your own tool
 
 ```python
-from word_agent import WordDocument, create_agent, tool
+from docx_harness import WordDocument, create_agent, tool
 
 doc = WordDocument.open("contract.docx")
 
@@ -143,7 +154,7 @@ The schema comes from the type hints and the docstring's `Args:` section. Tools 
 The tools are plain objects, so any loop or framework can drive them:
 
 ```python
-from word_agent import ToolRegistry, WordDocument, default_tools
+from docx_harness import ToolRegistry, WordDocument, default_tools
 
 doc = WordDocument.open()
 registry = ToolRegistry(default_tools(doc))

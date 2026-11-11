@@ -79,7 +79,7 @@ class WordPackage:
     ) -> "WordPackage":
         """Open a .docx file, or the bundled blank template when ``path`` is None."""
         if path is None:
-            data = resources.files("word_agent.document").joinpath("templates/blank.docx").read_bytes()
+            data = resources.files("docx_harness.document").joinpath("templates/blank.docx").read_bytes()
         else:
             data = Path(path).read_bytes()
         return cls.from_bytes(data, max_total_bytes=max_total_bytes, max_entries=max_entries)

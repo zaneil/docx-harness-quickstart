@@ -8,12 +8,12 @@ import urllib.request
 
 import pytest
 
-from word_agent import WordDocument, WordPackage
-from word_agent.ui.server import make_server
+from docx_harness import WordDocument, WordPackage
+from docx_harness.ui.server import make_server
 
 from conftest import ScriptedLLM, assistant, call
 
-HEADERS = {"X-Word-Agent": "1"}
+HEADERS = {"X-Docx-Harness": "1"}
 
 
 @pytest.fixture
@@ -44,7 +44,7 @@ def paragraphs(*texts):
 
 def test_page_and_empty_state(ui):
     _, request, _ = ui
-    assert b"word-agent" in request("/")
+    assert b"docx-harness" in request("/")
     assert json.loads(request("/state")) == {"name": "document.docx", "blocks": [], "pending": None}
 
 

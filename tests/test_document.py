@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from word_agent import DocumentError, StyleError, WordDocument
-from word_agent.document.ooxml import qn
+from docx_harness import DocumentError, StyleError, WordDocument
+from docx_harness.document.ooxml import qn
 
 from conftest import doc_from_body, reopen_with_python_docx
 

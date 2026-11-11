@@ -5,7 +5,7 @@ Run: uv run python examples/quickstart.py   (needs OPENROUTER_API_KEY in .env)
 
 from dotenv import load_dotenv
 
-from word_agent import draft
+from docx_harness import draft
 
 load_dotenv()
 

@@ -1,11 +1,11 @@
 [project]
-name = "word-agent"
+name = "docx-harness-quickstart"
 version = "0.1.0"
-description = "Open source SDK for building LLM agents that draft and edit Microsoft Word (.docx) documents."
+description = "Starter kit for LLM agents that draft and edit Microsoft Word (.docx) documents: document abstraction, tools, and an async harness with plan mode."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
-keywords = ["docx", "word", "agent", "llm", "ooxml"]
+keywords = ["docx", "word", "agent", "llm", "ooxml", "tool-calling", "agent-harness", "openrouter"]
 dependencies = [
     "lxml>=5.0",
     "openai>=1.40",
@@ -13,8 +13,8 @@ dependencies = [
 ]
 
 [project.scripts]
-word-agent = "word_agent.cli:main"
-word-agent-ui = "word_agent.ui.server:main"
+docx-harness = "docx_harness.cli:main"
+docx-harness-ui = "docx_harness.ui.server:main"
 
 [dependency-groups]
 dev = [
@@ -28,7 +28,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/word_agent"]
+packages = ["src/docx_harness"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

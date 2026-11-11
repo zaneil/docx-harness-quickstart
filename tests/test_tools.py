@@ -4,7 +4,7 @@ import asyncio
 import json
 from typing import Literal, Optional
 
-from word_agent import ToolRegistry, default_tools, tool
+from docx_harness import ToolRegistry, default_tools, tool
 
 
 def test_schema_from_signature_and_docstring():
@@ -161,7 +161,7 @@ async def test_insert_paragraphs_tidies_markdown_lists(doc):
 
 
 def test_normalize_keeps_markers_when_document_has_no_list_style():
-    from word_agent.tools.builtin import normalize_paragraphs
+    from docx_harness.tools.builtin import normalize_paragraphs
 
     assert normalize_paragraphs([{"text": "- a\n- b"}], available_styles={"normal"}) == [{"text": "- a\n- b", "style": None}]
 

@@ -51,7 +51,7 @@ class DocumentError(ValueError):
 
 
 class WordDocument:
-    def __init__(self, package: WordPackage, *, track_changes: bool = False, author: str = "word-agent"):
+    def __init__(self, package: WordPackage, *, track_changes: bool = False, author: str = "docx-harness"):
         self.package = package
         self.edits = EditContext(track_changes=track_changes, author=author)
         self._counter = 0
@@ -368,7 +368,7 @@ class WordDocument:
         paragraphs = tc.findall(P)
         if not paragraphs:
             paragraphs = [make_paragraph()]
-            tc.append(paragraphs[0])
+            self.edits.insert_block(tc, len(tc), paragraphs[0])
         self._set_paragraph_text(paragraphs[0], text)
         for extra in paragraphs[1:]:
             self.edits.delete_block(extra)

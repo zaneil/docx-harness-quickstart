@@ -7,7 +7,7 @@ import zipfile
 
 import pytest
 
-from word_agent import WordDocument, WordPackage
+from docx_harness import WordDocument, WordPackage
 
 W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
 

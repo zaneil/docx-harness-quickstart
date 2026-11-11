@@ -5,7 +5,7 @@ import zipfile
 
 import pytest
 
-from word_agent import PackageError, WordDocument, WordPackage
+from docx_harness import PackageError, WordDocument, WordPackage
 
 from conftest import W, make_docx, template_parts, zip_parts
 

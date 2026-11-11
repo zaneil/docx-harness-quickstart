@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from word_agent import Agent, ToolRegistry, WordDocument, adraft, adraft_many, create_agent, tool
+from docx_harness import Agent, ToolRegistry, WordDocument, adraft, adraft_many, create_agent, tool
 
 from conftest import ScriptedLLM, assistant, call
 

@@ -1,10 +1,10 @@
-"""word-agent: an SDK for LLM agents that draft and edit Word documents.
+"""docx-harness: an SDK for LLM agents that draft and edit Word documents.
 
 Three layers, usable together or separately:
 
-- ``word_agent.document``: the unzipped .docx as blocks you can read and edit
-- ``word_agent.tools``:    LLM-callable tools over a document
-- ``word_agent.agent``:    a generic async tool-calling harness with plan mode
+- ``docx_harness.document``: the unzipped .docx as blocks you can read and edit
+- ``docx_harness.tools``:    LLM-callable tools over a document
+- ``docx_harness.agent``:    a generic async tool-calling harness with plan mode
 """
 
 from .agent import (

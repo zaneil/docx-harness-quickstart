@@ -1,4 +1,4 @@
-"""Regenerate src/word_agent/document/templates/blank.docx.
+"""Regenerate src/docx_harness/document/templates/blank.docx.
 
 The template is a minimal, hand-written Word package with the styles the
 default tools rely on: Normal, Title, Subtitle, Heading 1-3, List Bullet,
@@ -134,7 +134,7 @@ PARTS = {
 
 
 def main() -> None:
-    target = Path(__file__).resolve().parents[1] / "src/word_agent/document/templates/blank.docx"
+    target = Path(__file__).resolve().parents[1] / "src/docx_harness/document/templates/blank.docx"
     target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, xml in PARTS.items():

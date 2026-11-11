@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>word-agent</title>
+<title>docx-harness</title>
 <style>
   :root {
     --bg: #f3f4f6; --panel: #ffffff; --ink: #1f2328; --muted: #6b7280; --line: #e2e5ea;
@@ -74,7 +74,7 @@
 </head>
 <body>
 <section id="chat">
-  <header><h1>word-agent</h1><small>Model: {{MODEL}}</small></header>
+  <header><h1>docx-harness</h1><small>Model: {{MODEL}}</small></header>
   <div id="log"><div class="hint" id="hint">Describe the document you want, or upload a .docx and ask for changes. Keep chatting to refine it.</div></div>
   <form id="form">
     <textarea id="input" placeholder="e.g. Draft a one page proposal for a team offsite with a budget table" autofocus></textarea>
@@ -100,7 +100,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const log = $("log"), input = $("input"), page = $("page");
-const HEADERS = { "X-Word-Agent": "1" };
+const HEADERS = { "X-Docx-Harness": "1" };
 let busy = false, pending = false;
 
 function add(cls, text) {

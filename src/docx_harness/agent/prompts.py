@@ -1,5 +1,5 @@
 """Prompts. The harness itself is domain-neutral; the Word-specific prompt is
-passed in by ``word_agent.create_agent``."""
+passed in by ``docx_harness.create_agent``."""
 
 GENERIC_SYSTEM_PROMPT = (
     "You are a capable assistant. Use the available tools to complete the user's "

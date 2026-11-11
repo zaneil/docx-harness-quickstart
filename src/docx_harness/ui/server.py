@@ -1,6 +1,6 @@
 """A small local chat UI for trying the agent.
 
-    word-agent-ui            # then open http://127.0.0.1:8765
+    docx-harness-ui            # then open http://127.0.0.1:8765
 
 Chat on the left, a live preview of the document on the right. Start from the
 blank template or upload a .docx, keep chatting to refine it, download the
@@ -52,7 +52,7 @@ class Session:
 
 
 def make_handler(session: Session, model_label: str):
-    page = resources.files("word_agent.ui").joinpath("chat.html").read_text(encoding="utf-8")
+    page = resources.files("docx_harness.ui").joinpath("chat.html").read_text(encoding="utf-8")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args) -> None:  # keep the terminal quiet
@@ -130,7 +130,7 @@ def make_handler(session: Session, model_label: str):
         def do_POST(self) -> None:
             # The custom header cannot be sent cross-site without a CORS
             # preflight, which this server never grants.
-            if not self._local() or self.headers.get("X-Word-Agent") != "1":
+            if not self._local() or self.headers.get("X-Docx-Harness") != "1":
                 return self._json({"error": "forbidden"}, 403)
             length = int(self.headers.get("Content-Length") or 0)
             if length > MAX_UPLOAD_BYTES:
@@ -220,9 +220,9 @@ def make_server(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="word-agent-ui", description="Local chat UI for trying word-agent.")
+    parser = argparse.ArgumentParser(prog="docx-harness-ui", description="Local chat UI for trying docx-harness.")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--model", help=f"OpenRouter model id (default: {DEFAULT_MODEL} or $WORD_AGENT_MODEL).")
+    parser.add_argument("--model", help=f"OpenRouter model id (default: {DEFAULT_MODEL} or $DOCX_HARNESS_MODEL).")
     parser.add_argument("--no-browser", action="store_true", help="Do not open a browser tab.")
     args = parser.parse_args(argv)
 
@@ -239,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}")
         return 1
     url = f"http://127.0.0.1:{server.server_address[1]}"
-    print(f"word-agent UI running at {url}  (Ctrl+C to stop)")
+    print(f"docx-harness UI running at {url}  (Ctrl+C to stop)")
     if not args.no_browser:
         threading.Timer(0.3, webbrowser.open, [url]).start()
     try:

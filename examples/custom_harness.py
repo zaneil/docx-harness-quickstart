@@ -1,6 +1,6 @@
 """Bring your own harness: drive the Word tools from a hand-written loop.
 
-Nothing here uses word_agent.agent. The same pattern works for plugging the
+Nothing here uses docx_harness.agent. The same pattern works for plugging the
 tools into any agent framework that accepts OpenAI-style tool definitions.
 
 Run: uv run python examples/custom_harness.py   (needs OPENROUTER_API_KEY in .env)
@@ -11,7 +11,7 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from word_agent import ToolRegistry, WordDocument, default_tools
+from docx_harness import ToolRegistry, WordDocument, default_tools
 
 load_dotenv()
 
