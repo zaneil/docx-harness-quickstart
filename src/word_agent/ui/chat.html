@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>word-agent</title>
+<style>
+  :root {
+    --bg: #f3f4f6; --panel: #ffffff; --ink: #1f2328; --muted: #6b7280; --line: #e2e5ea;
+    --accent: #2b579a; --accent-ink: #ffffff; --user: #e8eefb; --err: #b42318; --desk: #e5e7eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16181c; --panel: #1f2227; --ink: #e6e8eb; --muted: #9aa1ab; --line: #32363d;
+            --accent: #6f9ee8; --accent-ink: #10131a; --user: #26334d; --err: #ff8a80; --desk: #121417; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg);
+         display: grid; grid-template-columns: minmax(320px, 420px) 1fr; }
+  button, input, textarea { font: inherit; color: inherit; }
+  button { cursor: pointer; border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 5px 10px; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+  #chat { display: flex; flex-direction: column; min-height: 0; height: 100vh; background: var(--panel); border-right: 1px solid var(--line); }
+  header { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 15px; margin: 0; }
+  header small { color: var(--muted); }
+  #log { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 92%; padding: 8px 11px; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.user { align-self: flex-end; background: var(--user); }
+  .msg.agent { align-self: flex-start; border: 1px solid var(--line); }
+  .msg.plan { align-self: stretch; max-width: 100%; border: 1px solid var(--accent); }
+  .msg.plan b { display: block; margin-bottom: 4px; color: var(--accent); }
+  .msg.plan .actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .msg.plan .actions span { color: var(--muted); font-size: 12px; }
+  .tool { align-self: flex-start; color: var(--muted); font: 12px/1.4 ui-monospace, Menlo, monospace; overflow-wrap: anywhere; }
+  .error { align-self: flex-start; color: var(--err); font-size: 13px; overflow-wrap: anywhere; }
+  .hint { color: var(--muted); text-align: center; margin: auto 0; padding: 0 16px; }
+  form { border-top: 1px solid var(--line); padding: 10px 14px 12px; display: grid; gap: 8px; }
+  textarea { width: 100%; resize: none; height: 68px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  label.check { color: var(--muted); display: flex; gap: 6px; align-items: center; user-select: none; }
+
+  #side { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
+  #bar { display: flex; gap: 8px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  #bar .name { font-weight: 600; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #desk { flex: 1; overflow: auto; background: var(--desk); padding: 24px 16px; }
+  #note { text-align: center; color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+  /* The page stays white in both themes, like paper. */
+  #page { background: #fff; color: #111; max-width: 816px; min-height: 600px; margin: 0 auto; padding: 72px 80px;
+          box-shadow: 0 1px 4px rgba(0,0,0,.25); font: 11pt/1.35 Calibri, Carlito, "Segoe UI", Arial, sans-serif; }
+  #page .empty { color: #9aa1ab; text-align: center; padding-top: 120px; }
+  #page p, #page .blk { margin: 0 0 8pt; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #page .title { font-size: 28pt; line-height: 1.1; margin-bottom: 6pt; font-family: "Calibri Light", Calibri, sans-serif; }
+  #page .subtitle { font-size: 14pt; color: #5a5a5a; }
+  #page .h1, #page .h2, #page .h3 { font-family: "Calibri Light", Calibri, sans-serif; color: #2f5496; margin: 12pt 0 4pt; }
+  #page .h1 { font-size: 16pt; } #page .h2 { font-size: 13pt; } #page .h3 { font-size: 12pt; color: #1f3763; }
+  #page .li { padding-left: 36px; position: relative; margin-bottom: 3pt; }
+  #page .li::before { content: attr(data-marker); position: absolute; left: 14px; }
+  #page .quote { font-style: italic; color: #404040; text-align: center; margin: 10pt 43px; }
+  #page table { border-collapse: collapse; width: 100%; margin: 0 0 8pt; }
+  #page td { border: 1px solid #555; padding: 3px 7px; vertical-align: top; white-space: pre-wrap; }
+  #page .id { float: left; margin-left: -62px; width: 50px; text-align: right; color: #c0c4cc; font: 9px ui-monospace, Menlo, monospace; line-height: 2; user-select: none; }
+  #page .li .id { margin-left: -98px; }
+  @media (max-width: 800px) {
+    body { grid-template-columns: 1fr; grid-template-rows: 60vh auto; }
+    #chat { height: 60vh; border-right: 0; border-bottom: 1px solid var(--line); }
+    #side { height: auto; } #page { padding: 32px 24px; } #page .id { display: none; }
+  }
+</style>
+</head>
+<body>
+<section id="chat">
+  <header><h1>word-agent</h1><small>Model: {{MODEL}}</small></header>
+  <div id="log"><div class="hint" id="hint">Describe the document you want, or upload a .docx and ask for changes. Keep chatting to refine it.</div></div>
+  <form id="form">
+    <textarea id="input" placeholder="e.g. Draft a one page proposal for a team offsite with a budget table" autofocus></textarea>
+    <div class="row">
+      <label class="check"><input type="checkbox" id="plan"> Plan first</label>
+      <button class="primary" id="send">Send</button>
+    </div>
+  </form>
+</section>
+<section id="side">
+  <div id="bar">
+    <span class="name" id="name">document.docx</span>
+    <button id="upload">Upload .docx</button>
+    <button id="reset">New blank</button>
+    <button id="download">Download</button>
+    <input type="file" id="file" accept=".docx" hidden>
+  </div>
+  <div id="desk">
+    <p id="note">Approximate preview. Download the file to see the real thing in Word.</p>
+    <div id="page"></div>
+  </div>
+</section>
+<script>
+const $ = id => document.getElementById(id);
+const log = $("log"), input = $("input"), page = $("page");
+const HEADERS = { "X-Word-Agent": "1" };
+let busy = false, pending = false;
+
+function add(cls, text) {
+  $("hint")?.remove();
+  const el = document.createElement("div");
+  el.className = cls;
+  el.textContent = text;
+  log.appendChild(el);
+  log.scrollTop = log.scrollHeight;
+  return el;
+}
+
+function setBusy(value) {
+  busy = value;
+  for (const id of ["send", "upload", "reset"]) $(id).disabled = value;
+  document.querySelectorAll(".plan button").forEach(b => b.disabled = value);
+  $("send").textContent = value ? "Working…" : "Send";
+  $("plan").disabled = value || pending;
+  input.placeholder = pending ? "Type feedback to revise the plan, or approve it above" : "Describe what to write or change";
+}
+
+function addPlan(text) {
+  document.querySelectorAll(".plan .actions").forEach(a => a.remove());   // only the latest plan is actionable
+  const box = add("msg plan", "");
+  const title = document.createElement("b"); title.textContent = "Proposed plan";
+  const body = document.createElement("div"); body.textContent = text;
+  const actions = document.createElement("div"); actions.className = "actions";
+  const approve = document.createElement("button"); approve.className = "primary"; approve.textContent = "Approve and run";
+  const discard = document.createElement("button"); discard.textContent = "Discard";
+  const tip = document.createElement("span"); tip.textContent = "or type feedback below to revise it";
+  approve.onclick = () => { actions.remove(); stream("/approve", null); };
+  discard.onclick = async () => { actions.remove(); render(await post("/discard")); add("tool", "plan discarded"); };
+  actions.append(approve, discard, tip);
+  box.append(title, body, actions);
+  log.scrollTop = log.scrollHeight;
+}
+
+function handle(event) {
+  if (event.type === "tool") {
+    const args = event.arguments.length > 110 ? event.arguments.slice(0, 110) + "…" : event.arguments;
+    add("tool", "→ " + event.name + " " + args);
+  } else if (event.type === "tool_error") add("error", event.text);
+  else if (event.type === "error") add("error", "Error: " + event.text);
+  else if (event.type === "reply") add("msg agent", event.text);
+  else if (event.type === "plan") addPlan(event.text);
+  else if (event.type === "state") render(event);
+}
+
+async function stream(path, payload) {
+  if (busy) return;
+  setBusy(true);
+  try {
+    const response = await fetch(path, { method: "POST", headers: HEADERS, body: payload ? JSON.stringify(payload) : "" });
+    if (!response.ok) throw new Error((await response.json()).error || response.statusText);
+    const reader = response.body.getReader(), decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      for (const line of lines) if (line.trim()) handle(JSON.parse(line));
+    }
+  } catch (err) {
+    add("error", "Error: " + err.message);
+  }
+  setBusy(false);
+  input.focus();
+}
+
+async function post(path, body, headers) {
+  const response = await fetch(path, { method: "POST", headers: { ...HEADERS, ...headers }, body });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || response.statusText);
+  return data;
+}
+
+// ---------------------------------------------------------------- preview
+function runs(target, block) {
+  const list = block.runs && block.runs.length ? block.runs : [{ text: block.text || "" }];
+  for (const run of list) {
+    const span = document.createElement("span");
+    span.textContent = run.text;
+    if (run.bold) span.style.fontWeight = "700";
+    if (run.italic) span.style.fontStyle = "italic";
+    if (run.underline || run.strike) span.style.textDecoration = [run.underline && "underline", run.strike && "line-through"].filter(Boolean).join(" ");
+    if (run.color) span.style.color = "#" + run.color;
+    if (run.size_pt) span.style.fontSize = run.size_pt + "pt";
+    if (run.font) span.style.fontFamily = JSON.stringify(run.font) + ", sans-serif";
+    if (run.highlight) span.style.background = { darkBlue: "navy", darkGray: "gray", lightGray: "lightgray" }[run.highlight] || run.highlight;
+    target.appendChild(span);
+  }
+  if (!target.textContent) target.appendChild(document.createElement("br"));
+}
+
+function render(state) {
+  $("name").textContent = state.name;
+  pending = !!state.pending;
+  page.replaceChildren();
+  if (!state.blocks.length) {
+    const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "Empty document";
+    page.appendChild(empty);
+  }
+  let number = 0;
+  for (const block of state.blocks) {
+    const id = document.createElement("span"); id.className = "id"; id.textContent = block.id;
+    let el;
+    if (block.type === "table") {
+      el = document.createElement("table");
+      for (const row of block.rows) {
+        const tr = el.insertRow();
+        for (const cell of row) tr.insertCell().textContent = cell;
+      }
+      if (el.rows[0]) el.rows[0].style.fontWeight = "700";
+      const wrap = document.createElement("div"); wrap.append(id, el); el = wrap;
+    } else {
+      const style = (block.style || "").toLowerCase();
+      el = document.createElement("div");
+      const heading = style.match(/^heading ([1-3])$/);
+      el.className = "blk " + (heading ? "h" + heading[1] : style === "title" ? "title" : style === "subtitle" ? "subtitle"
+        : style === "quote" ? "quote" : style.startsWith("list") ? "li" : "");
+      if (style.startsWith("list")) el.dataset.marker = style.includes("number") ? (++number) + "." : "•";
+      el.appendChild(id);
+      runs(el, block);
+    }
+    page.appendChild(el);
+  }
+  setBusy(busy);
+}
+
+// ----------------------------------------------------------------- events
+$("form").onsubmit = event => {
+  event.preventDefault();
+  const message = input.value.trim();
+  if (!message || busy) return;
+  input.value = "";
+  add("msg user", message);
+  stream("/chat", { message, plan: $("plan").checked });
+};
+input.onkeydown = event => {
+  if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("form").requestSubmit(); }
+};
+$("download").onclick = () => { location.href = "/download"; };
+$("upload").onclick = () => $("file").click();
+$("file").onchange = async () => {
+  const file = $("file").files[0];
+  $("file").value = "";
+  if (!file) return;
+  try {
+    render(await post("/upload", file, { "X-Filename": encodeURIComponent(file.name) }));
+    add("tool", "loaded " + file.name + " (conversation restarted)");
+  } catch (err) { add("error", "Error: " + err.message); }
+};
+$("reset").onclick = async () => {
+  if (!confirm("Start over with a blank document? The current document and conversation will be discarded.")) return;
+  render(await post("/reset"));
+  log.replaceChildren();
+  add("tool", "new blank document");
+};
+fetch("/state").then(r => r.json()).then(state => { render(state); if (state.pending) addPlan(state.pending); });
+</script>
+</body>
+</html>

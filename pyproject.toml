@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 word-agent = "word_agent.cli:main"
+word-agent-ui = "word_agent.ui.server:main"
 
 [dependency-groups]
 dev = [

@@ -45,6 +45,16 @@ print(result.final_text)
 draft("Fix the typos and add a summary table", "memo.docx", "memo-v2.docx", plan=True)
 ```
 
+### Chat UI for testing
+
+```bash
+uv run word-agent-ui        # opens http://127.0.0.1:8765
+```
+
+A small local page with a chat on the left and a live preview of the document on the right. Start from the blank template or upload a `.docx`, keep chatting to refine it (the conversation and block ids carry over between messages), tick **Plan first** to review a plan before anything changes, and download the result. It is a test tool: one in-memory session, standard library only, bound to localhost. The preview is approximate; open the downloaded file in Word for the real rendering.
+
+To continue a conversation in your own code, pass the previous result's messages back in: `agent.arun("now make it shorter", history=result.messages)`.
+
 ## Architecture
 
 ```

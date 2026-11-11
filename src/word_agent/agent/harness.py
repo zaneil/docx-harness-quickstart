@@ -89,22 +89,23 @@ class Agent:
         *,
         plan_mode: bool = False,
         approve: ApproveCallback | None = None,
+        history: list[dict] | None = None,
     ) -> AgentResult:
         """Complete ``instruction``.
+
+        Pass ``history`` (the ``messages`` of an earlier result) to continue a
+        conversation instead of starting a new one.
 
         With ``plan_mode=True`` the agent first plans with read-only tools. The
         plan goes to ``approve`` (auto-approved when no callback is given) and is
         executed only once approved.
         """
         if not plan_mode:
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": instruction},
-            ]
+            messages = _start(self.system_prompt, history, instruction)
             text, steps, status = await self._loop(messages, read_only=False)
             return AgentResult(text, steps, messages, status)
 
-        plan = await self.aplan(instruction)
+        plan = await self.aplan(instruction, history=history)
         revisions = 0
         while True:
             decision = True if approve is None else await _maybe_await(approve(plan))
@@ -116,18 +117,23 @@ class Agent:
                 continue
             return AgentResult(plan.text, plan.steps, plan.messages, "rejected", plan)
 
-    async def aplan(self, instruction: str, *, revise: Plan | None = None, feedback: str | None = None) -> Plan:
+    async def aplan(
+        self,
+        instruction: str,
+        *,
+        revise: Plan | None = None,
+        feedback: str | None = None,
+        history: list[dict] | None = None,
+    ) -> Plan:
         """Produce a plan using read-only tools only. Pass ``revise`` and
-        ``feedback`` to refine an earlier plan."""
+        ``feedback`` to refine an earlier plan, or ``history`` to plan the next
+        turn of an existing conversation."""
         if revise is not None:
             messages = list(revise.messages)
             messages.append({"role": "user", "content": REVISE_PLAN_PROMPT.format(feedback=feedback or "")})
             prior_steps = revise.steps
         else:
-            messages = [
-                {"role": "system", "content": f"{self.system_prompt}\n\n{self.plan_prompt}"},
-                {"role": "user", "content": instruction},
-            ]
+            messages = _start(f"{self.system_prompt}\n\n{self.plan_prompt}", history, instruction)
             prior_steps = 0
         text, steps, _ = await self._loop(messages, read_only=True)
         plan = Plan(instruction, text, messages, prior_steps + steps)
@@ -225,6 +231,14 @@ class Agent:
     async def _emit(self, type_: str, data: dict) -> None:
         if self.on_event is not None:
             await _maybe_await(self.on_event(AgentEvent(type_, data)))
+
+
+def _start(system_prompt: str, history: list[dict] | None, instruction: str) -> list[dict]:
+    """Messages for a new turn: system prompt, any earlier turns, the new request."""
+    earlier = list(history or [])
+    if earlier and earlier[0].get("role") == "system":
+        earlier = earlier[1:]
+    return [{"role": "system", "content": system_prompt}, *earlier, {"role": "user", "content": instruction}]
 
 
 def _canonical(arguments: Any) -> str:
