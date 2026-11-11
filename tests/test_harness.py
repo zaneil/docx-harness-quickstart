@@ -208,3 +208,45 @@ async def test_adraft_edits_existing_file_and_adraft_many(tmp_path):
     assert isinstance(results[1], AssertionError)
     assert WordDocument.open(tmp_path / "a.docx").text() == "A"
     assert WordDocument.open(tmp_path / "c.docx").text() == "C"
+
+
+async def test_duplicate_reads_are_short_circuited():
+    hits = []
+
+    @tool(read_only=True)
+    def peek(n: int = 0) -> str:
+        """Peek."""
+        hits.append(n)
+        return f"value {n}"
+
+    @tool
+    def poke() -> str:
+        """Poke."""
+        return "poked"
+
+    llm = ScriptedLLM([
+        assistant(call("peek", _id="a", n=1)),
+        assistant(call("peek", _id="b", n=1), call("peek", _id="c", n=2)),   # first is a repeat
+        assistant(call("poke", _id="d")),
+        assistant(call("peek", _id="e", n=1)),                                # fresh again after a write
+        assistant(content="done"),
+    ])
+    result = await Agent(llm, ToolRegistry([peek, poke])).arun("go")
+    tool_results = {m["tool_call_id"]: m["content"] for m in result.messages if m["role"] == "tool"}
+    assert hits == [1, 2, 1]
+    assert tool_results["a"] == "value 1" and tool_results["e"] == "value 1"
+    assert "already made this exact call" in tool_results["b"]
+
+
+async def test_planning_step_budget_forces_a_plan(doc):
+    llm = ScriptedLLM(
+        [assistant(call("read_blocks", count=n)) for n in (1, 2)]
+        + [assistant(content="1. The plan."), assistant(content="executed")]
+    )
+    agent = create_agent(doc, llm=llm)
+    agent.max_plan_steps = 3
+    result = await agent.arun("x", plan_mode=True)
+    assert result.plan.text == "1. The plan."
+    assert llm.requests[0]["tools"] and llm.requests[1]["tools"]
+    assert llm.requests[2]["tools"] is None          # last planning step: no tools offered
+    assert llm.requests[3]["tools"]                  # execution has tools again

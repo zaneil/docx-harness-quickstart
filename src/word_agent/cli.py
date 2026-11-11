@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("instruction", help="What to write or change.")
     parser.add_argument("-i", "--input", help="Existing .docx to edit. Omit to start from the built-in template.")
     parser.add_argument("-o", "--output", default="output.docx", help="Where to save the result (default: output.docx).")
-    parser.add_argument("--model", help="OpenRouter model id (default: openai/gpt-4o-mini or $WORD_AGENT_MODEL).")
+    parser.add_argument("--model", help="OpenRouter model id (default: openai/gpt-4.1-mini or $WORD_AGENT_MODEL).")
     parser.add_argument("--plan", action="store_true", help="Plan first and ask for approval before changing anything.")
     parser.add_argument("--yes", action="store_true", help="With --plan: approve the plan automatically.")
     parser.add_argument("--raw", action="store_true", help="Also give the agent the raw XML write tool.")

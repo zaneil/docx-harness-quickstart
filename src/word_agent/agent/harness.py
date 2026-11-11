@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Union
 
@@ -65,6 +66,7 @@ class Agent:
         system_prompt: str = GENERIC_SYSTEM_PROMPT,
         plan_prompt: str = PLAN_MODE_PROMPT,
         max_steps: int = 40,
+        max_plan_steps: int = 8,
         max_plan_revisions: int = 5,
         on_event: EventCallback | None = None,
     ):
@@ -73,6 +75,9 @@ class Agent:
         self.system_prompt = system_prompt
         self.plan_prompt = plan_prompt
         self.max_steps = max_steps
+        #: Model calls allowed while planning. On the last one the model gets
+        #: no tools, so it has to answer with the plan.
+        self.max_plan_steps = max_plan_steps
         self.max_plan_revisions = max_plan_revisions
         self.on_event = on_event
 
@@ -155,8 +160,12 @@ class Agent:
         Appends to ``messages`` in place. Returns (final text, steps, status)."""
         schema = self.tools.to_openai_schema(read_only=read_only) or None
         last_text = ""
-        for step in range(1, self.max_steps + 1):
-            reply = await self.llm.acomplete(messages, schema)
+        limit = min(self.max_steps, self.max_plan_steps) if read_only else self.max_steps
+        self._seen_reads: dict[tuple[str, str], str] = {}
+        for step in range(1, limit + 1):
+            # Planning must end in a plan: on the final step offer no tools.
+            offered = None if read_only and step == limit and limit > 1 else schema
+            reply = await self.llm.acomplete(messages, offered)
             messages.append(reply)
             last_text = reply.get("content") or last_text
             calls = reply.get("tool_calls") or []
@@ -166,7 +175,7 @@ class Agent:
             results = await self._run_tool_calls(calls, read_only)
             for call, result in zip(calls, results):
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
-        return last_text, self.max_steps, "max_steps"
+        return last_text, limit, "max_steps"
 
     async def _run_tool_calls(self, calls: list[dict], read_only: bool) -> list[str]:
         """Run one turn's tool calls. Consecutive read-only calls run
@@ -193,13 +202,39 @@ class Agent:
         name = call["function"]["name"]
         arguments = call["function"].get("arguments")
         await self._emit("tool_call", {"id": call["id"], "name": name, "arguments": arguments})
-        result = await self.tools.aexecute(name, arguments, read_only=read_only)
+        key = (name, _canonical(arguments))
+        if self._is_read_only(call):
+            if key in self._seen_reads:
+                # Weaker models can loop on identical reads. Say so instead of
+                # paying for the same result again.
+                result = (
+                    "You already made this exact call and nothing has changed since; its result is "
+                    "above. Do not repeat it. Continue with the next step"
+                    + (" and write your plan." if read_only else ".")
+                )
+            else:
+                result = await self.tools.aexecute(name, arguments, read_only=read_only)
+                self._seen_reads[key] = result
+        else:
+            result = await self.tools.aexecute(name, arguments, read_only=read_only)
+            if not read_only:
+                self._seen_reads.clear()  # state changed; reads are fresh again
         await self._emit("tool_result", {"id": call["id"], "name": name, "result": result})
         return result
 
     async def _emit(self, type_: str, data: dict) -> None:
         if self.on_event is not None:
             await _maybe_await(self.on_event(AgentEvent(type_, data)))
+
+
+def _canonical(arguments: Any) -> str:
+    """Arguments in a comparable form (key order and spacing ignored)."""
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments or "{}")
+        except ValueError:
+            return arguments
+    return json.dumps(arguments, sort_keys=True, default=str)
 
 
 async def _maybe_await(value: Any) -> Any:

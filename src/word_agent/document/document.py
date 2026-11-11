@@ -426,12 +426,15 @@ class WordDocument:
         return [s for s in styles if style_type is None or s["type"] == style_type]
 
     def set_paragraph_style(self, ref: str, style: str) -> int:
-        """Apply a paragraph style by name or id. Returns paragraphs changed."""
+        """Apply a paragraph style by name or id. Returns the number of
+        paragraphs whose style actually changed."""
         style_id = styling.resolve_style(self._styles, style, "paragraph")
-        paragraphs = self._paragraphs_for(ref)
-        for p in paragraphs:
-            styling.set_paragraph_style(p, style_id)
-        return len(paragraphs)
+        changed = 0
+        for p in self._paragraphs_for(ref):
+            if styling.paragraph_style_id(p) != style_id:
+                styling.set_paragraph_style(p, style_id)
+                changed += 1
+        return changed
 
     def format_text(self, ref: str, match: str | None = None, case_sensitive: bool = True, **fmt) -> int:
         """Apply character formatting to a block, a table cell, or only the

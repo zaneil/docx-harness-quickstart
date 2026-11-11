@@ -138,3 +138,42 @@ async def test_custom_sync_async_and_blocking_tools():
 def test_sync_execute():
     registry = ToolRegistry([tool(lambda: None, name="noop")])
     assert registry.execute("noop") == "OK"
+
+
+async def test_insert_paragraphs_tidies_markdown_lists(doc):
+    registry = ToolRegistry(default_tools(doc))
+    await registry.aexecute("insert_paragraphs", {"paragraphs": [
+        {"text": "- one\n- two"},                          # list crammed into one paragraph
+        {"text": "- three", "style": "List Bullet"},       # marker typed in front of list-styled text
+        {"text": "1. first\n2) second"},
+        {"text": "Para A\n\nPara B"},
+        {"text": "- 5 degrees is cold"},                    # a lone dash line is left alone
+        {"text": "line one\nline two"},                    # single newline stays a line break
+    ]})
+    blocks = [(b["style"], b["text"]) for b in doc.read(count=50)["blocks"]]
+    assert blocks == [
+        ("List Bullet", "one"), ("List Bullet", "two"), ("List Bullet", "three"),
+        ("List Number", "first"), ("List Number", "second"),
+        ("Normal", "Para A"), ("Normal", "Para B"),
+        ("Normal", "- 5 degrees is cold"),
+        ("Normal", "line one\nline two"),
+    ]
+
+
+def test_normalize_keeps_markers_when_document_has_no_list_style():
+    from word_agent.tools.builtin import normalize_paragraphs
+
+    assert normalize_paragraphs([{"text": "- a\n- b"}], available_styles={"normal"}) == [{"text": "- a\n- b", "style": None}]
+
+
+async def test_teaching_messages(doc):
+    registry = ToolRegistry(default_tools(doc))
+    await registry.aexecute("insert_paragraphs", {"paragraphs": [{"text": "## Scope"}]})
+    assert doc.read()["blocks"][0] == {"id": "b1", "type": "paragraph", "style": "heading 2", "text": "Scope"}
+
+    result = await registry.aexecute("set_paragraph_style", {"blocks": ["b1"], "style": "Heading 2"})
+    assert "Nothing changed" in result and "format_text" in result
+
+    result = await registry.aexecute("insert_paragraphs", {"paragraphs": [{"text": "| a | b |\n|---|---|\n| 1 | 2 |"}]})
+    assert result.startswith("Error:") and "insert_table" in result
+    assert len(doc) == 1

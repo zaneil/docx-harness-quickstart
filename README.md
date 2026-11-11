@@ -14,7 +14,7 @@ uv sync                      # or: pip install -e .
 cp .env.example .env         # then add your OpenRouter key
 ```
 
-Models are reached through [OpenRouter](https://openrouter.ai) using the `openai` SDK. The default model is `openai/gpt-4o-mini`; set `WORD_AGENT_MODEL` or pass `model=` to use any other.
+Models are reached through [OpenRouter](https://openrouter.ai) using the `openai` SDK. The default model is `openai/gpt-4.1-mini`; set `WORD_AGENT_MODEL` or pass `model=` to use any other.
 
 ## Quickstart
 

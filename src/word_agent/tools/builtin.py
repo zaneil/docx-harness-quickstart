@@ -7,6 +7,7 @@ call and finish in fewer round trips.
 from __future__ import annotations
 
 import json
+import re
 from typing import Literal, Optional
 
 from ..document import WordDocument
@@ -21,7 +22,7 @@ _PARAGRAPHS_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "Paragraph text. One paragraph per item; do not put blank lines inside."},
+                    "text": {"type": "string", "description": "Paragraph text. One paragraph (or one list item) per entry, without '-' or '1.' markers."},
                     "style": {"type": "string", "description": "Paragraph style name, e.g. 'Title', 'Heading 1', 'List Bullet'. Omit for normal body text."},
                 },
                 "required": ["text"],
@@ -34,6 +35,49 @@ _PARAGRAPHS_SCHEMA = {
     },
     "required": ["paragraphs"],
 }
+
+
+_BULLET = re.compile(r"^\s*[-*•–]\s+")
+_HEADING = re.compile(r"^\s*(#{1,3})\s+(.*)$")
+_NUMBER = re.compile(r"^\s*\d+[.)]\s+")
+
+
+def normalize_paragraphs(items: list, available_styles: set[str]) -> list[dict]:
+    """Tidy what models commonly send: markdown-style lists crammed into one
+    paragraph, list markers typed in front of list-styled text, and blank-line
+    separated paragraphs. ``available_styles`` are lower-cased style names."""
+    out: list[dict] = []
+    for item in items:
+        if isinstance(item, str):
+            item = {"text": item}
+        text = str(item.get("text", ""))
+        style = item.get("style") or None
+        lines = [line for line in text.split("\n") if line.strip()]
+        if len(lines) > 1 and all(line.strip().startswith("|") for line in lines):
+            raise ValueError(
+                "Paragraph text contains a markdown table. Nothing was inserted. "
+                "Use insert_table with rows as a list of lists instead, and resend the other paragraphs."
+            )
+        heading = _HEADING.match(text) if len(lines) == 1 else None
+        if heading and f"heading {len(heading.group(1))}" in available_styles:
+            out.append({"text": heading.group(2).strip(), "style": style or f"Heading {len(heading.group(1))}"})
+            continue
+        is_list_style = bool(style) and "list" in style.lower()
+        handled = False
+        for marker, auto_style in ((_BULLET, "List Bullet"), (_NUMBER, "List Number")):
+            if lines and all(marker.match(line) for line in lines) and (len(lines) > 1 or is_list_style):
+                target = style if is_list_style else auto_style
+                if is_list_style or auto_style.lower() in available_styles:
+                    out.extend({"text": marker.sub("", line).strip(), "style": target} for line in lines)
+                    handled = True
+                break
+        if handled:
+            continue
+        if "\n\n" in text:
+            out.extend({"text": part.strip(), "style": style} for part in re.split(r"\n\s*\n", text) if part.strip())
+        else:
+            out.append({"text": text, "style": style})
+    return out
 
 
 def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
@@ -102,12 +146,11 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         """Insert one or more paragraphs (headings, body text, list items) at a position. Use a style for headings and lists rather than manual formatting."""
         if not isinstance(paragraphs, list) or not paragraphs:
             raise ValueError("paragraphs must be a non-empty list of {text, style} objects")
+        available = {s["name"].lower() for s in doc.list_styles("paragraph")}
         ids = []
         anchor = after
-        for item in paragraphs:
-            if isinstance(item, str):
-                item = {"text": item}
-            anchor = doc.insert_paragraph(str(item.get("text", "")), item.get("style"), anchor)
+        for item in normalize_paragraphs(paragraphs, available):
+            anchor = doc.insert_paragraph(item["text"], item["style"], anchor)
             ids.append(anchor)
         return f"Inserted {len(ids)} paragraph(s): {', '.join(ids)}"
 
@@ -213,7 +256,7 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
 
     @tool
     def set_paragraph_style(blocks: list[str], style: str) -> str:
-        """Apply a named paragraph style (e.g. 'Heading 2', 'List Bullet', 'Normal') to blocks.
+        """Change which named paragraph style blocks use (e.g. turn body text into 'Heading 2' or 'List Bullet'). To change color, size or font, use format_text instead.
 
         Args:
             blocks: Block ids or table cells like 'b3[0,1]'.
@@ -222,6 +265,11 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         if isinstance(blocks, str):
             blocks = [blocks]
         count = sum(doc.set_paragraph_style(ref, style) for ref in blocks)
+        if count == 0:
+            return (
+                f"Nothing changed: these blocks already use style {style!r}. "
+                "To change color, size, font or bold, call format_text instead."
+            )
         return f"Applied style {style!r} to {count} paragraph(s)."
 
     @tool

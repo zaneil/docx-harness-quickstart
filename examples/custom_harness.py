@@ -26,7 +26,7 @@ messages = [
 
 for _ in range(10):
     reply = client.chat.completions.create(
-        model="openai/gpt-4o-mini", messages=messages, tools=registry.to_openai_schema()
+        model="openai/gpt-4.1-mini", messages=messages, tools=registry.to_openai_schema()
     ).choices[0].message
     messages.append(reply)
     if not reply.tool_calls:
