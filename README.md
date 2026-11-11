@@ -1,4 +1,4 @@
-# docx-harness-quickstart
+# DOCX agent harness quickstart: create and edit Word documents in Python
 
 A starter kit for building LLM agents that draft and edit Microsoft Word (`.docx`) documents in Python. Clone it, point your coding agent at it, and adapt it.
 
@@ -6,9 +6,25 @@ A `.docx` file is a zip archive of XML. docx-harness unzips it into an in-memory
 
 > Not affiliated with or endorsed by Microsoft. "Microsoft Word" is a trademark of Microsoft Corporation.
 
+## When to use this starter kit
+
+Use `docx-harness-quickstart` to **build a Python AI agent that creates or edits Word documents**, or to **add DOCX editing tools to an existing agent**. Clone and adapt the source; the Python import is `docx_harness`.
+
+| What you want to build | Start with |
+| --- | --- |
+| An agent that drafts reports, proposals, or memos as `.docx` | [`draft` and the command-line quickstart](#quickstart) |
+| An agent that edits paragraphs, tables, and formatting in an existing Word file | [Edit a Word document with an agent](docs/use-cases.md#edit-a-word-document-with-an-agent) |
+| Word-editing tools for your own tool-calling loop | [Add DOCX tools to an existing agent](docs/use-cases.md#add-docx-tools-to-an-existing-agent) |
+| Direct Python document editing without an LLM or API key | [Create and edit a DOCX without an LLM](docs/use-cases.md#create-and-edit-a-docx-without-an-llm) |
+| A review step before an agent changes a document | [Plan and approve document edits](docs/use-cases.md#plan-and-approve-document-edits) |
+
+The built-in semantic tools handle body paragraphs, tables, and formatting. Generating tracked changes, PDF rendering, page-layout inspection, and editing legacy `.doc` files are outside the current scope. See [scope and limitations](#scope-and-limitations) before choosing it for a task.
+
 ## For coding agents
 
 If you are a coding agent (or are handing this repo to one), read [`AGENTS.md`](AGENTS.md) first. It has the commands, a task-to-file map, a minimal usage snippet for each layer, and the rules that keep generated documents valid. `CLAUDE.md` points to the same file.
+
+For choosing an integration, see the [task guide](docs/use-cases.md). A compact [documentation index](llms.txt) links to the Markdown documentation and runnable examples.
 
 - Everything is verifiable offline: `uv sync && uv run pytest` takes about 3 seconds and needs no API key.
 - The package is `docx_harness` under `src/`; the layers depend one way only: `agent` → `tools` → `document`.

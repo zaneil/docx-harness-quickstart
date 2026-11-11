@@ -1,0 +1,27 @@
+# docx-harness-quickstart
+
+> Python starter kit for building AI agents that create and edit Microsoft Word (.docx) documents. Clone and adapt it, reuse its document tools in an existing agent, or use its document layer without an LLM.
+
+Repository: https://github.com/zaneil/docx-harness-quickstart
+Python import: `docx_harness`. Requires Python 3.10 or newer.
+The document and tools layers need no API key. The default agent uses OpenRouter.
+Built-in semantic editing covers body paragraphs, tables, and formatting.
+Generating tracked changes, PDF rendering, page-layout inspection, and legacy .doc files are not supported.
+
+## Documentation
+
+- [README](https://raw.githubusercontent.com/zaneil/docx-harness-quickstart/main/README.md): Installation, CLI and Python quickstarts, architecture, capabilities, and limitations.
+- [Task guide](https://raw.githubusercontent.com/zaneil/docx-harness-quickstart/main/docs/use-cases.md): Create or edit DOCX in Python, connect document tools to your own agent, and approve a plan before editing.
+- [AGENTS.md](https://raw.githubusercontent.com/zaneil/docx-harness-quickstart/main/AGENTS.md): Setup, tests, task-to-file map, layer boundaries, and document-validity rules for coding agents working on the source.
+
+## Examples
+
+- [Draft and edit a document](https://raw.githubusercontent.com/zaneil/docx-harness-quickstart/main/examples/quickstart.py): Full agent with an approval callback; requires an API key.
+- [Bring your own harness](https://raw.githubusercontent.com/zaneil/docx-harness-quickstart/main/examples/custom_harness.py): Drive the document tools from a custom model loop; requires an API key.
+- [Add a custom tool](https://raw.githubusercontent.com/zaneil/docx-harness-quickstart/main/examples/custom_tool.py): Extend the built-in tools.
+
+## Source reference
+
+- [Public helpers](https://raw.githubusercontent.com/zaneil/docx-harness-quickstart/main/src/docx_harness/api.py): `create_agent`, `draft`, `adraft`, and `adraft_many`.
+- [Document API](https://raw.githubusercontent.com/zaneil/docx-harness-quickstart/main/src/docx_harness/document/document.py): `WordDocument` operations.
+- [Built-in tools](https://raw.githubusercontent.com/zaneil/docx-harness-quickstart/main/src/docx_harness/tools/builtin.py): Tool names, parameters, and behavior.
