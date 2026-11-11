@@ -12,6 +12,12 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/zaneil/docx-harness-quickstart"
+Documentation = "https://github.com/zaneil/docx-harness-quickstart/blob/main/README.md"
+"Task guide" = "https://github.com/zaneil/docx-harness-quickstart/blob/main/docs/use-cases.md"
+Issues = "https://github.com/zaneil/docx-harness-quickstart/issues"
+
 [project.scripts]
 docx-harness = "docx_harness.cli:main"
 docx-harness-ui = "docx_harness.ui.server:main"
