@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import os
+import posixpath
 import zipfile
 from importlib import resources
 from pathlib import Path
@@ -137,6 +138,39 @@ class WordPackage:
         folder = self.main_document_part.rsplit("/", 1)[0] if "/" in self.main_document_part else ""
         name = f"{folder}/styles.xml" if folder else "styles.xml"
         return name if name in self._parts else None
+
+    @property
+    def settings_part(self) -> str | None:
+        related = self.related_parts("settings")
+        if related:
+            return related[0]
+        folder = self.main_document_part.rpartition("/")[0]
+        name = f"{folder}/settings.xml" if folder else "settings.xml"
+        return name if name in self._parts else None
+
+    def related_parts(self, kind: str) -> list[str]:
+        """Parts the main document part points to with a relationship whose
+        type ends in ``/kind`` ("header", "footer", "footnotes", "settings"...)."""
+        folder, _, base = self.main_document_part.rpartition("/")
+        rels_name = f"{folder}/_rels/{base}.rels" if folder else f"_rels/{base}.rels"
+        if rels_name not in self._parts:
+            return []
+        try:
+            rels = self.xml(rels_name)
+        except PackageError:
+            return []
+        found: list[str] = []
+        for rel in rels.iter(f"{{{PKG_RELS_NS}}}Relationship"):
+            if not rel.get("Type", "").endswith("/" + kind) or rel.get("TargetMode") == "External":
+                continue
+            target = rel.get("Target", "")
+            if target.startswith("/"):
+                name = target.lstrip("/")
+            else:
+                name = posixpath.normpath(posixpath.join(folder, target))
+            if name in self._parts and name not in found:
+                found.append(name)
+        return found
 
     def list_parts(self) -> list[str]:
         return list(self._parts)

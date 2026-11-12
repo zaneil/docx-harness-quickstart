@@ -35,10 +35,12 @@ class Session:
     def __init__(self, llm_factory: Callable[[], LLMClient]):
         self.llm_factory = llm_factory
         self.lock = threading.Lock()
+        self.track_changes = False
         self.reset()
 
     def reset(self, data: bytes | None = None, name: str | None = None) -> None:
-        self.doc = WordDocument(WordPackage.from_bytes(data)) if data else WordDocument.open()
+        package = WordPackage.from_bytes(data) if data else WordPackage.open()
+        self.doc = WordDocument(package, track_changes=self.track_changes)
         self.name = name or "document.docx"
         self.history: list[dict] | None = None
         self.pending = None  # a Plan awaiting approval
@@ -46,8 +48,10 @@ class Session:
     def state(self) -> dict:
         return {
             "name": self.name,
-            "blocks": self.doc.read(count=1_000_000, include_formatting=True)["blocks"],
+            "blocks": self.doc.read(count=1_000_000, include_formatting=True, resolve_styles=True)["blocks"],
             "pending": self.pending.text if self.pending else None,
+            "track_changes": self.track_changes,
+            "revisions": len(self.doc.revisions()),
         }
 
 
@@ -148,6 +152,23 @@ def make_handler(session: Session, model_label: str):
             elif self.path == "/discard":
                 with session.lock:
                     session.pending = None
+                self._json(session.state())
+            elif self.path == "/track":
+                # Like the switch in Word: applies to edits made from now on.
+                with session.lock:
+                    session.track_changes = bool(json.loads(body or b"{}").get("on"))
+                    session.doc.track_changes = session.track_changes
+                self._json(session.state())
+            elif self.path == "/revisions":
+                # Accept or reject every tracked change, like the buttons in Word.
+                action = json.loads(body or b"{}").get("action")
+                if action not in ("accept", "reject"):
+                    return self._json({"error": "action must be 'accept' or 'reject'"}, 400)
+                with session.lock:
+                    if action == "accept":
+                        session.doc.accept_revisions()
+                    else:
+                        session.doc.reject_revisions()
                 self._json(session.state())
             elif self.path == "/reset":
                 with session.lock:

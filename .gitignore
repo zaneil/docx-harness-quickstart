@@ -11,3 +11,5 @@ build/
 /*.docx
 ~$*.docx
 .idea/
+# local tracking notes
+/TODO.md

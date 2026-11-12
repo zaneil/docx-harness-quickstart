@@ -54,8 +54,12 @@ def test_default_tools_have_valid_schemas(doc):
             assert "description" in schema, f"{t.name}.{prop} has no description"
         json.dumps(t.to_openai())
 
+    assert {"accept_revisions", "reject_revisions"} <= {t.name for t in tools if not t.read_only}
     read_only = {t.name for t in tools if t.read_only}
-    assert read_only == {"get_outline", "read_blocks", "search_text", "list_styles", "list_parts", "read_part_xml"}
+    assert read_only == {
+        "get_outline", "read_blocks", "search_text", "list_styles", "list_revisions", "list_parts", "read_part_xml",
+        "read_headers_footnotes",
+    }
 
 
 async def test_builtin_tools_end_to_end(doc):

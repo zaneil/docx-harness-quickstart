@@ -50,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", help="OpenRouter model id (default: openai/gpt-4.1-mini or $DOCX_HARNESS_MODEL).")
     parser.add_argument("--plan", action="store_true", help="Plan first and ask for approval before changing anything.")
     parser.add_argument("--yes", action="store_true", help="With --plan: approve the plan automatically.")
+    parser.add_argument("--track-changes", action="store_true", help="Record the edits as tracked changes (redlines) to accept or reject in Word.")
+    parser.add_argument("--author", help="Author name on tracked changes (default: docx-harness).")
     parser.add_argument("--raw", action="store_true", help="Also give the agent the raw XML write tool.")
     parser.add_argument("--max-steps", type=int, default=40, help="Maximum model calls (default: 40).")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show full tool calls and results.")
@@ -69,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             plan=args.plan,
             approve=None if args.yes or not args.plan else _ask_approval,
+            track_changes=args.track_changes,
+            author=args.author,
             model=args.model,
             include_raw=args.raw,
             max_steps=args.max_steps,
@@ -86,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     print(result.final_text)
     if result.status == "max_steps":
         print(f"warning: stopped after {result.steps} steps; the document may be incomplete.", file=sys.stderr)
-    print(f"Saved {args.output}", file=sys.stderr)
+    print(f"Saved {args.output}" + (" with tracked changes" if args.track_changes else ""), file=sys.stderr)
     return 0
 
 

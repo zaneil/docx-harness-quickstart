@@ -31,7 +31,7 @@ For choosing an integration, see the [task guide](docs/use-cases.md). A compact 
 - Prompts that work well as a starting point:
   - "Read AGENTS.md, then add a tool that inserts an image after a given block, with tests."
   - "Read AGENTS.md, then replace the built-in harness with my LangGraph agent, keeping the default tools."
-  - "Read AGENTS.md, then implement tracked changes in `document/edits.py`."
+  - "Read AGENTS.md, then add tools for reading and replying to Word comments."
 
 ## Install
 
@@ -56,6 +56,9 @@ uv run docx-harness "Tighten the introduction and make every heading dark blue" 
 
 # Plan mode: the agent inspects the document, proposes a plan, and changes nothing until you approve
 uv run docx-harness "Restructure this into an executive summary plus appendix" -i report.docx -o report-v2.docx --plan
+
+# Tracked changes: every edit is saved as a redline to accept or reject in Word
+uv run docx-harness "Shorten the payment terms to 30 days and fix the typos" -i contract.docx -o contract-redline.docx --track-changes --author "Review Agent"
 ```
 
 Python:
@@ -70,6 +73,9 @@ print(result.final_text)
 
 # Edit an existing file, planning first
 draft("Fix the typos and add a summary table", "memo.docx", "memo-v2.docx", plan=True)
+
+# Save the edits as tracked changes instead of applying them directly
+draft("Make the tone more formal", "memo.docx", "memo-redline.docx", track_changes=True, author="Review Agent")
 ```
 
 ### Chat UI for testing
@@ -127,11 +133,12 @@ Block ids (`b1`, `b2`...) are assigned on load and on insert, and never shift wh
 
 | Kind | Tools |
 | --- | --- |
-| Read | `get_outline`, `read_blocks`, `search_text`, `list_styles` |
+| Read | `get_outline`, `read_blocks`, `search_text`, `list_styles`, `read_headers_footnotes`, `list_revisions` |
 | Write | `insert_paragraphs`, `insert_table`, `insert_page_break`, `insert_table_row` |
-| Update | `update_paragraph`, `replace_text`, `set_table_cell` |
+| Update | `update_paragraph`, `replace_text`, `set_table_cell`, `move_blocks` |
 | Delete | `delete_blocks`, `delete_table_row` |
 | Style | `set_paragraph_style`, `format_text`, `set_paragraph_format` |
+| Review | `accept_revisions`, `reject_revisions` |
 | Raw package | `list_parts`, `read_part_xml`, and `write_part_xml` (only with `include_raw=True`) |
 
 Tool schemas are in OpenAI function-calling format. Tool errors are returned to the model as text rather than raised, so it can correct itself.
@@ -193,11 +200,41 @@ For any OpenAI-compatible endpoint (OpenAI, a LiteLLM proxy, Ollama, vLLM) use `
 
 Runnable versions of these are in [`examples/`](examples).
 
+## Tracked changes
+
+Open a document with `track_changes=True` and every edit made through the document API or the tools is recorded as a Word revision instead of being applied directly:
+
+```python
+doc = WordDocument.open("contract.docx", track_changes=True, author="Review Agent")
+doc.replace_text("60 days", "30 days")            # old text struck out, new text inserted
+doc.set_paragraph_text("b4", "Payment is due within 30 days of a valid invoice.")   # only the changed words are revised
+doc.delete_block("b9")                            # stays in the file as a deletion, leaves the outline
+doc.format_text("b2", match="Supplier", bold=True)   # formatting change, previous formatting kept
+doc.move_block("b6", after="b2")                  # a tracked move: the paragraph keeps its id
+print(doc.revisions())                            # what is pending, including other authors' changes
+doc.save("contract-redline.docx")
+
+doc.reject_revisions(author="Review Agent")       # undo them again; or by ids=[...] or block="b4"
+doc.accept_revisions()                            # no arguments: everything that is pending
+```
+
+- Text, paragraphs, tables and table rows are tracked as insertions and deletions; character formatting, paragraph formatting and style changes are tracked as formatting changes.
+- The agent (and `doc.text()`, the outline and block ids) always sees the document as it would read with all changes accepted.
+- Revisions already in the file from other authors are preserved. Undoing something inserted in the same session removes it rather than recording a deletion.
+- With tracking on, the agent is told to make minimal, targeted edits so the redline stays reviewable.
+- The saved file has Word's own Track Changes switched on (`w:trackRevisions` in `word/settings.xml`), so the reader's edits are tracked too. `doc.track_changes = False` turns both off.
+- `replace_text` and `search` also cover headers, footers, footnotes and endnotes, and those edits are tracked the same way. `doc.stories()` returns their text.
+- A moved paragraph is recorded as a move. Word has no move markup for tables, so a moved table is a deletion plus an insertion.
+- `accept_revisions` and `reject_revisions` resolve insertions, deletions, moves and formatting changes from any author. The agent is told not to use them unless asked. The chat UI has Accept all and Reject all buttons.
+
+Not covered: edits made through `write_part_xml`; accepting or rejecting cell-level table revisions (`w:cellIns`, `w:cellDel`, `w:cellMerge`), section and table-grid changes and numbering changes, which are left in place; and pending revisions inside a paragraph you move (your own earlier edits included), which read as plain text in the moved copy. They are kept in the half left behind and come back if the move is rejected.
+
 ## Scope and limitations
 
 - Editable through the semantic tools: body paragraphs and tables, paragraph styles, character and paragraph formatting.
-- Preserved on round trip but not editable through the semantic tools: headers and footers, footnotes, images, comments, content controls. They can be reached through the raw part tools.
-- Existing tracked changes are respected when reading (deleted text is not shown to the agent) and left intact on save. Writing edits *as* tracked changes is not implemented yet; all mutations already flow through one place (`document/edits.py`) so it can be added without API changes.
+- Headers, footers, footnotes and endnotes: their text can be read, searched and replaced, but not restyled or restructured.
+- Preserved on round trip but not editable through the semantic tools: images, comments, content controls. They can be reached through the raw part tools.
+- Tracked output has been checked with python-docx and macOS `textutil`, not yet in Word itself. The move markup is the part most likely to need adjusting.
 - There is no layout engine: the agent cannot know page counts or where lines break.
 - A document without the standard style names (for example no `Heading 1`) gets a clear error listing the styles it does have; styles are not created automatically.
 - Legacy `.doc` files are not supported.
