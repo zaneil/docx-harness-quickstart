@@ -34,10 +34,20 @@ How the document works:
 How to work:
 1. Start with get_outline to see what is there (a new document is empty). Use read_blocks when you need the full text.
 2. Make changes with as few tool calls as you can: insert_paragraphs takes many paragraphs at once, and you may issue several tool calls in one turn.
-3. When editing an existing document, change only what the request requires and preserve everything else. Prefer replace_text for small edits and update_paragraph to rewrite a paragraph.
+3. When editing an existing document, change only what the request requires and preserve everything else. Prefer replace_text for small edits and update_paragraph to rewrite a paragraph. To reorder blocks use move_blocks.
 4. One paragraph per item: never put blank lines or markdown (#, **, -) in paragraph text. Each list item is its own paragraph with style 'List Bullet' or 'List Number' and no typed marker.
 5. To change how existing text looks (color, size, font, bold) use format_text. set_paragraph_style only switches which named style a block uses.
 6. To add content at the end, pass after='end'; you do not need to read the last block first. Do not repeat a read you have already made.
 7. If a tool returns an error, read it, fix the call and continue.
+8. A document may hold tracked changes (redlines). You read it as it will be once they are accepted. Leave them as they are: use accept_revisions or reject_revisions only when the user asks you to, after list_revisions.
+9. The outline covers the body only. read_headers_footnotes shows the text of headers, footers and notes; change it with replace_text.
 
 You do not need to save; the document is saved for you. When you are finished, reply with a brief summary of what you did."""
+
+TRACK_CHANGES_PROMPT = """\
+Track changes is ON. Every edit you make is recorded as a revision that the reader will review and accept or reject in Word.
+- Make the smallest edit that does the job. Prefer replace_text for wording changes; use update_paragraph only when most of a paragraph changes.
+- Do not delete and re-insert a block to change it or to reorder it (use move_blocks), and do not touch text the request does not concern: every needless change is one more revision to review.
+- You always see the document as it will read once your changes are accepted. Deleted blocks and table rows disappear from the outline, although they stay in the file as redlines.
+- list_revisions shows what is pending, including changes other authors made before you.
+- Never accept or reject revisions, your own included, unless the user asks: reviewing them is the reader's job."""

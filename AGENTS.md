@@ -40,7 +40,7 @@ Run `uv run pytest` before finishing any change. Tests use a scripted fake model
 | Use another model or provider | Implement `LLMClient.acomplete` (see `agent/llm.py`), or use `OpenAICompatibleClient(model, api_key=..., base_url=...)` | `tests/test_harness.py` |
 | Change what the model is told | `agent/prompts.py` | live run |
 | Add styles to new documents | `scripts/build_template.py`, then rerun it | `tests/test_document.py` |
-| Implement tracked changes (redlines) | `document/edits.py` only (`EditContext`) | `tests/test_document.py` |
+| Change how tracked changes (redlines) are recorded, accepted or rejected | `document/edits.py` (`EditContext`); selection in `WordDocument._resolve`; reading helpers in `document/ooxml.py` | `tests/test_tracked.py` |
 | Change the chat UI | `ui/server.py`, `ui/chat.html` | `tests/test_ui.py` |
 
 ## Minimal usage, for writing code against it
@@ -76,7 +76,7 @@ doc.save("out.docx")
 ## Rules that keep the code working
 
 1. **Respect the layer boundaries** in the table above. The harness must stay free of Word-specific code, and the document layer free of LLM code.
-2. **All mutations go through `EditContext`** (`document/edits.py`): `insert_run`, `delete_run`, `insert_block`, `delete_block`. Do not call `parent.insert`, `parent.remove` or `append` on document content anywhere else. This single path is what makes tracked changes possible later.
+2. **All mutations go through `EditContext`** (`document/edits.py`): `insert_run`, `delete_run`, `insert_block`, `delete_block`, `move_block`, and `resolve` for accepting or rejecting a revision. Do not call `parent.insert`, `parent.remove` or `append` on document content anywhere else, and call `edits.before_run_format(run)` / `edits.before_paragraph_format(p)` before changing properties. This single path is what records tracked changes when `track_changes=True`. Use `with doc.edits.untracked():` only while preparing content that is not in the document yet.
 3. **Tools return strings and never raise to the caller.** `ToolRegistry.aexecute` converts exceptions to `"Error: ..."` so the model can recover. Write error messages that tell the model what to do next.
 4. **Mark tools `@tool(read_only=True)` only if they change nothing.** Read-only tools are the only ones offered in plan mode, and they may run concurrently. Anything that mutates must not carry the flag.
 5. **Block ids are in memory only.** `b1`, `b2`... are assigned on load and on insert, stay stable for the life of a `WordDocument`, and are not written to the file. Do not persist them across processes. Table cells are addressed as `"b7[row,col]"`, zero-based.
@@ -94,8 +94,10 @@ doc.save("out.docx")
 
 ## Known limits (do not assume these work)
 
-- Editable through the built-in tools: body paragraphs, tables, paragraph styles, character and paragraph formatting. Headers, footers, footnotes, images, comments and content controls are preserved on save but have no semantic tools; they are reachable only through `list_parts` / `read_part_xml` / `write_part_xml` (the last requires `include_raw=True`).
-- `WordDocument(track_changes=True)` raises `NotImplementedError`.
+- Editable through the built-in tools: body paragraphs, tables, paragraph styles, character and paragraph formatting. Headers, footers, footnotes and endnotes are text only: `doc.stories()`, `search` and `replace_text` reach them (a part name such as `word/header1.xml` works as `ref`), nothing else does, and they have no block ids. Images, comments and content controls are preserved on save but have no semantic tools; they are reachable only through `list_parts` / `read_part_xml` / `write_part_xml` (the last requires `include_raw=True`).
+- `WordDocument.open(path, track_changes=True, author=...)` records edits as revisions. A tracked-deleted block or table row stays in the XML but has no block id and is skipped by `_block_elements`, `_live_rows` and `_live_paragraphs`; do not iterate `w:p` / `w:tr` directly when reading. The same holds for the source half of a tracked move (`w:moveFrom`); a tracked move re-binds the block id to the copy at the destination. Setting `doc.track_changes` also writes `w:trackRevisions` to the settings part (skipped when the file has none).
+- `accept_revisions` / `reject_revisions` handle `w:ins`, `w:del`, `w:moveFrom` / `w:moveTo` and the `w:rPrChange`, `w:pPrChange`, `w:trPrChange`, `w:tcPrChange`, `w:tblPrChange` family. `w:cellIns`, `w:cellDel`, `w:cellMerge`, `w:sectPrChange`, `w:tblGridChange` and `w:numberingChange` are left in place. Block ids can change after either call (a rejected deletion comes back under a new id).
+- Tracked output is verified with python-docx and `textutil`, not in Word.
 - No layout engine: page counts and line breaks are unknown.
 - Styles are looked up, not created. Asking for a style the document lacks raises `StyleError` listing the styles it has.
 - Legacy `.doc` is not supported.

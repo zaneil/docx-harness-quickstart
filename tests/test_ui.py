@@ -45,7 +45,9 @@ def paragraphs(*texts):
 def test_page_and_empty_state(ui):
     _, request, _ = ui
     assert b"docx-harness" in request("/")
-    assert json.loads(request("/state")) == {"name": "document.docx", "blocks": [], "pending": None}
+    assert json.loads(request("/state")) == {
+        "name": "document.docx", "blocks": [], "pending": None, "track_changes": False, "revisions": 0,
+    }
 
 
 def test_chat_streams_events_and_keeps_conversation(ui):
@@ -124,3 +126,38 @@ def test_cross_site_requests_are_refused(ui):
     with pytest.raises(urllib.error.HTTPError) as wrong_host:
         request("/reset", b"", headers={**HEADERS, "Host": "evil.example"})
     assert wrong_host.value.code == 403
+
+
+def test_track_changes_toggle(ui):
+    llm, request, post_stream = ui
+    llm.turns = [assistant(paragraphs("Plain")), assistant(content="ok"),
+                 assistant(call("replace_text", find="Plain", replace="Tracked")), assistant(content="ok")]
+    post_stream("/chat", {"message": "write"})
+    state = json.loads(request("/track", json.dumps({"on": True}).encode()))
+    assert state["track_changes"] is True and state["revisions"] == 0
+    state = post_stream("/chat", {"message": "edit"})[-1]
+    assert state["revisions"] == 2
+    assert [r for r in state["blocks"][0]["runs"] if r.get("inserted")] == [{"text": "Tracked", "inserted": True}]
+    doc = WordDocument(WordPackage.from_bytes(request("/download")))
+    assert doc.text() == "Tracked" and "Plain</w:delText>" in doc.read_part_xml("word/document.xml")
+    # The switch survives starting a new document.
+    assert json.loads(request("/reset", b""))["track_changes"] is True
+
+
+def test_accept_and_reject_all(ui):
+    llm, request, post_stream = ui
+    llm.turns = [assistant(paragraphs("Plain")), assistant(content="ok"),
+                 assistant(call("replace_text", find="Plain", replace="Tracked")), assistant(content="ok"),
+                 assistant(call("replace_text", find="Plain", replace="Again")), assistant(content="ok")]
+    post_stream("/chat", {"message": "write"})
+    request("/track", json.dumps({"on": True}).encode())
+    assert post_stream("/chat", {"message": "edit"})[-1]["revisions"] == 2
+    state = json.loads(request("/revisions", json.dumps({"action": "reject"}).encode()))
+    assert state["revisions"] == 0 and [b["text"] for b in state["blocks"]] == ["Plain"]
+    post_stream("/chat", {"message": "edit again"})
+    state = json.loads(request("/revisions", json.dumps({"action": "accept"}).encode()))
+    assert state["revisions"] == 0 and [b["text"] for b in state["blocks"]] == ["Again"]
+    assert "w:del" not in WordDocument(WordPackage.from_bytes(request("/download"))).read_part_xml("word/document.xml")
+    with pytest.raises(urllib.error.HTTPError) as bad:
+        request("/revisions", json.dumps({"action": "shred"}).encode())
+    assert bad.value.code == 400

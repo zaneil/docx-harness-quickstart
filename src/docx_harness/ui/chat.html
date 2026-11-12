@@ -80,6 +80,7 @@
     <textarea id="input" placeholder="e.g. Draft a one page proposal for a team offsite with a budget table" autofocus></textarea>
     <div class="row">
       <label class="check"><input type="checkbox" id="plan"> Plan first</label>
+      <label class="check"><input type="checkbox" id="track"> Track changes</label>
       <button class="primary" id="send">Send</button>
     </div>
   </form>
@@ -87,6 +88,8 @@
 <section id="side">
   <div id="bar">
     <span class="name" id="name">document.docx</span>
+    <button id="accept" hidden>Accept all</button>
+    <button id="reject" hidden>Reject all</button>
     <button id="upload">Upload .docx</button>
     <button id="reset">New blank</button>
     <button id="download">Download</button>
@@ -115,10 +118,11 @@ function add(cls, text) {
 
 function setBusy(value) {
   busy = value;
-  for (const id of ["send", "upload", "reset"]) $(id).disabled = value;
+  for (const id of ["send", "upload", "reset", "accept", "reject"]) $(id).disabled = value;
   document.querySelectorAll(".plan button").forEach(b => b.disabled = value);
   $("send").textContent = value ? "Working…" : "Send";
   $("plan").disabled = value || pending;
+  $("track").disabled = value;
   input.placeholder = pending ? "Type feedback to revise the plan, or approve it above" : "Describe what to write or change";
 }
 
@@ -185,20 +189,48 @@ function runs(target, block) {
   for (const run of list) {
     const span = document.createElement("span");
     span.textContent = run.text;
-    if (run.bold) span.style.fontWeight = "700";
-    if (run.italic) span.style.fontStyle = "italic";
+    // false: switched off on the run although the paragraph's style has it on
+    if (run.bold !== undefined) span.style.fontWeight = run.bold ? "700" : "400";
+    if (run.italic !== undefined) span.style.fontStyle = run.italic ? "italic" : "normal";
     if (run.underline || run.strike) span.style.textDecoration = [run.underline && "underline", run.strike && "line-through"].filter(Boolean).join(" ");
+    else if (run.underline === false || run.strike === false) span.style.textDecoration = "none";
     if (run.color) span.style.color = "#" + run.color;
     if (run.size_pt) span.style.fontSize = run.size_pt + "pt";
     if (run.font) span.style.fontFamily = JSON.stringify(run.font) + ", sans-serif";
+    if (run.inserted) { span.style.color = "#0a7d32"; span.style.textDecoration = "underline"; }
     if (run.highlight) span.style.background = { darkBlue: "navy", darkGray: "gray", lightGray: "lightgray" }[run.highlight] || run.highlight;
     target.appendChild(span);
   }
   if (!target.textContent) target.appendChild(document.createElement("br"));
 }
 
+// Paragraph layout and the character formatting its style supplies. Direct
+// formatting on the paragraph wins over the style; runs override both.
+function layout(el, block, isList) {
+  const style = block.style_format || {};
+  const base = style.run || {};
+  if (base.bold) el.style.fontWeight = "700";
+  if (base.italic) el.style.fontStyle = "italic";
+  if (base.underline || base.strike) el.style.textDecoration = [base.underline && "underline", base.strike && "line-through"].filter(Boolean).join(" ");
+  if (base.color) el.style.color = "#" + base.color;
+  if (base.size_pt) el.style.fontSize = base.size_pt + "pt";
+  if (base.font) el.style.fontFamily = JSON.stringify(base.font) + ", sans-serif";
+  const fmt = { ...(style.paragraph || {}), ...(block.format || {}) };
+  if (fmt.alignment) el.style.textAlign = fmt.alignment;
+  if (fmt.space_before_pt !== undefined) el.style.marginTop = fmt.space_before_pt + "pt";
+  if (fmt.space_after_pt !== undefined) el.style.marginBottom = fmt.space_after_pt + "pt";
+  if (fmt.line_spacing) el.style.lineHeight = String(Math.round(fmt.line_spacing * 120) / 100);  // Word's "single" is about 1.2
+  if (fmt.indent_right_in) el.style.paddingRight = fmt.indent_right_in + "in";
+  if (!isList) {  // list items already get their indent and marker from the preview's own styling
+    if (fmt.indent_left_in) el.style.paddingLeft = fmt.indent_left_in + "in";
+    if (fmt.first_line_indent_in) el.style.textIndent = fmt.first_line_indent_in + "in";
+  }
+}
+
 function render(state) {
-  $("name").textContent = state.name;
+  $("name").textContent = state.name + (state.revisions ? " · " + state.revisions + " tracked change" + (state.revisions === 1 ? "" : "s") : "");
+  $("track").checked = !!state.track_changes;
+  $("accept").hidden = $("reject").hidden = !state.revisions;
   pending = !!state.pending;
   page.replaceChildren();
   if (!state.blocks.length) {
@@ -224,6 +256,7 @@ function render(state) {
       el.className = "blk " + (heading ? "h" + heading[1] : style === "title" ? "title" : style === "subtitle" ? "subtitle"
         : style === "quote" ? "quote" : style.startsWith("list") ? "li" : "");
       if (style.startsWith("list")) el.dataset.marker = style.includes("number") ? (++number) + "." : "•";
+      layout(el, block, style.startsWith("list"));
       el.appendChild(id);
       runs(el, block);
     }
@@ -244,6 +277,16 @@ $("form").onsubmit = event => {
 input.onkeydown = event => {
   if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("form").requestSubmit(); }
 };
+$("track").onchange = async () => {
+  try { render(await post("/track", JSON.stringify({ on: $("track").checked }))); }
+  catch (err) { add("error", "Error: " + err.message); }
+};
+for (const action of ["accept", "reject"]) {
+  $(action).onclick = async () => {
+    try { render(await post("/revisions", JSON.stringify({ action }))); }
+    catch (err) { add("error", "Error: " + err.message); }
+  };
+}
 $("download").onclick = () => { location.href = "/download"; };
 $("upload").onclick = () => $("file").click();
 $("file").onchange = async () => {

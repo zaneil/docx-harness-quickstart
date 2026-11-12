@@ -192,11 +192,6 @@ def test_raw_part_write_resets_ids(doc):
     assert len(doc.outline()) == 1
 
 
-def test_track_changes_hook_is_reserved():
-    with pytest.raises(NotImplementedError):
-        WordDocument.open(track_changes=True)
-
-
 def test_page_break_and_lists(doc, tmp_path):
     doc.insert_paragraph("one", "List Bullet")
     doc.insert_paragraph("two", "List Number")
@@ -204,3 +199,31 @@ def test_page_break_and_lists(doc, tmp_path):
     reopened = reopen_with_python_docx(doc, tmp_path)
     assert [p.style.name for p in reopened.paragraphs[:2]] == ["List Bullet", "List Number"]
     assert 'w:type="page"' in doc.read_part_xml("word/document.xml")
+
+
+def test_read_reports_paragraph_layout_and_what_the_style_supplies(doc):
+    from docx_harness.document import styling
+
+    heading = doc.insert_paragraph("Heading", "Heading 1")
+    body = doc.insert_paragraph("Body text")
+    doc.set_paragraph_format(body, alignment="right", space_after_pt=6, line_spacing=1.5,
+                             indent_left_in=0.5, first_line_indent_in=-0.25, keep_with_next=True)
+    doc.format_text(heading, bold=False)
+
+    plain = doc.read(body, 1)["blocks"][0]
+    assert "format" not in plain and "runs" not in plain
+    direct = doc.read(count=2, include_formatting=True)["blocks"]
+    assert "format" not in direct[0] and "style_format" not in direct[0]  # nothing set on the heading itself
+    assert direct[1]["format"] == {"alignment": "right", "space_after_pt": 6.0, "line_spacing": 1.5,
+                                   "indent_left_in": 0.5, "first_line_indent_in": -0.25, "keep_with_next": True}
+    assert direct[0]["runs"] == [{"text": "Heading"}]
+
+    resolved = doc.read(count=2, include_formatting=True, resolve_styles=True)["blocks"]
+    normal, h1 = resolved[1]["style_format"], resolved[0]["style_format"]
+    assert normal["run"] == {"size_pt": 11.0, "font": "Calibri"}  # from the document defaults
+    assert normal["paragraph"] == {"space_after_pt": 8.0, "line_spacing": 1.08}
+    assert h1 == styling.style_format(doc._styles, "Heading1")
+    assert h1["run"]["size_pt"] > 11 and h1["run"]["font"] != "Calibri" and h1["paragraph"]["keep_with_next"] is True
+    assert resolved[0]["runs"] == [{"text": "Heading", "bold": False}]  # an explicit off overrides the style
+    assert styling.style_format(None, None) == {"paragraph": {}, "run": {}}
+    assert styling.style_format(doc._styles, "NoSuchStyle")["run"] == {"size_pt": 11.0, "font": "Calibri"}

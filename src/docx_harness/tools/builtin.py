@@ -116,13 +116,13 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         Args:
             start: Id of the first block to read. Omit to start at the top.
             count: Number of blocks to read.
-            include_formatting: Also return each paragraph's runs with bold, italic, color and size.
+            include_formatting: Also return each paragraph's alignment, spacing and indents, and its runs with bold, italic, color and size.
         """
         return json.dumps(doc.read(start, count, include_formatting), ensure_ascii=False)
 
     @tool(read_only=True)
     def search_text(query: str, case_sensitive: bool = False) -> str:
-        """Find blocks and table cells containing a piece of text.
+        """Find blocks and table cells containing a piece of text. Headers, footers and notes are searched too; those hits name the part instead of a block.
 
         Args:
             query: Text to look for.
@@ -138,6 +138,36 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         paragraph = sorted(s["name"] for s in styles if s["type"] == "paragraph")
         table = sorted(s["name"] for s in styles if s["type"] == "table")
         return f"Paragraph styles: {', '.join(paragraph) or '(none)'}\nTable styles: {', '.join(table) or '(none)'}"
+
+    @tool(read_only=True)
+    def read_headers_footnotes() -> str:
+        """Read the text of the document's headers, footers, footnotes and endnotes, grouped by part name. Edit that text with replace_text, passing the part name as block."""
+        sections = []
+        for story in doc.stories():
+            lines = [f"  {text}" for text in story["paragraphs"] if text.strip()]
+            sections.append(f"{story['part']} ({story['kind']}):\n" + ("\n".join(lines) or "  (empty)"))
+        return "\n".join(sections) or "The document has no headers, footers, footnotes or endnotes."
+
+    @tool(read_only=True)
+    def list_revisions(limit: int = 100) -> str:
+        """List the tracked changes (redlines) pending in the document: insertions, deletions and formatting changes, each with its revision id in brackets, the author and the affected block.
+
+        Args:
+            limit: Maximum number of revisions to list.
+        """
+        revisions = doc.revisions()
+        if not revisions:
+            return "There are no tracked changes in the document."
+        lines = []
+        for r in revisions[:max(limit, 0)]:
+            where = r["block"] or r.get("part") or ("its old place" if r.get("move") == "from" else "deleted block")
+            what = repr(r["text"]) if r["text"] else f"whole {r.get('target', 'paragraph')}"
+            if r.get("target") == "paragraph format":
+                what = "paragraph formatting"
+            lines.append(f"[{r['id']}] {r['type']} by {r['author']} in {where}: {what}")
+        if len(revisions) > len(lines):
+            lines.append(f"({len(lines)} of {len(revisions)} revisions shown)")
+        return "\n".join(lines)
 
     # ----------------------------------------------------------------- write
 
@@ -196,7 +226,7 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         Args:
             find: Exact text to find.
             replace: Replacement text. Use an empty string to delete.
-            block: Limit to one block id or table cell like 'b3[0,1]'. Omit for the whole document.
+            block: Limit to one block id, a table cell like 'b3[0,1]', or a part name from read_headers_footnotes. Omit for the whole document, headers, footers and notes included.
             case_sensitive: Match case exactly.
         """
         count = doc.replace_text(find, replace, block, case_sensitive)
@@ -225,6 +255,24 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
             index: Zero-based position for the new row. Omit to append at the bottom.
         """
         return f"Inserted row {doc.insert_table_row(table_id, cells, index)} in {table_id}"
+
+    @tool
+    def move_blocks(block_ids: list[str], after: str) -> str:
+        """Move blocks (paragraphs or whole tables) to another place in the document, keeping their order and their ids. Use this to reorder content instead of deleting and re-inserting it.
+
+        Args:
+            block_ids: Ids of the blocks to move, in the order they should appear.
+            after: Where to put them: a block id (they go after it), 'start' or 'end'.
+        """
+        if isinstance(block_ids, str):
+            block_ids = [block_ids]
+        if after in block_ids:
+            raise ValueError(f"after={after!r} is one of the blocks being moved; pick a block that stays put, or 'start' / 'end'.")
+        anchor = after
+        for block_id in block_ids:
+            doc.move_block(block_id, anchor)
+            anchor = block_id
+        return f"Moved {len(block_ids)} block(s) after {after}."
 
     # ---------------------------------------------------------------- delete
 
@@ -350,6 +398,58 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         )
         return f"Formatted {count} paragraph(s)."
 
+    # ------------------------------------------------------------- revisions
+
+    def resolve_revisions(accept: bool, ids, author, block, all_revisions) -> str:
+        if isinstance(ids, (str, int)):
+            ids = [ids]
+        if not (ids or author or block or all_revisions):
+            raise ValueError(
+                "Say which revisions: pass ids (the numbers in brackets from list_revisions), "
+                "author, block, or all_revisions=true. Nothing was changed."
+            )
+        resolve = doc.accept_revisions if accept else doc.reject_revisions
+        count = resolve(ids=[str(i) for i in ids] if ids else None, author=author or None, block=block or None)
+        if count == 0:
+            return "No tracked changes matched; nothing changed."
+        left = len(doc.revisions())
+        verb = "Accepted" if accept else "Rejected"
+        return f"{verb} {count} revision(s); {left} still pending. Block ids may have changed: call get_outline before further edits."
+
+    @tool
+    def accept_revisions(
+        ids: Optional[list[str]] = None,
+        author: Optional[str] = None,
+        block: Optional[str] = None,
+        all_revisions: bool = False,
+    ) -> str:
+        """Accept tracked changes, making them a permanent part of the document. Only when the user asks for it. Give at least one of the arguments; several narrow the selection together.
+
+        Args:
+            ids: Revision ids, the numbers in brackets from list_revisions.
+            author: Accept only this author's revisions.
+            block: Accept only revisions inside this block id.
+            all_revisions: Accept every tracked change in the document.
+        """
+        return resolve_revisions(True, ids, author, block, all_revisions)
+
+    @tool
+    def reject_revisions(
+        ids: Optional[list[str]] = None,
+        author: Optional[str] = None,
+        block: Optional[str] = None,
+        all_revisions: bool = False,
+    ) -> str:
+        """Reject tracked changes, restoring the text and formatting from before them. Only when the user asks for it. Give at least one of the arguments; several narrow the selection together.
+
+        Args:
+            ids: Revision ids, the numbers in brackets from list_revisions.
+            author: Reject only this author's revisions.
+            block: Reject only revisions inside this block id.
+            all_revisions: Reject every tracked change in the document.
+        """
+        return resolve_revisions(False, ids, author, block, all_revisions)
+
     # ------------------------------------------------------------- raw parts
 
     @tool(read_only=True)
@@ -383,11 +483,12 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         return f"Wrote {name}. Call get_outline again before further edits."
 
     tools = [
-        get_outline, read_blocks, search_text, list_styles,
+        get_outline, read_blocks, search_text, list_styles, read_headers_footnotes, list_revisions,
         insert_paragraphs, insert_table, insert_page_break,
-        update_paragraph, replace_text, set_table_cell, insert_table_row,
+        update_paragraph, replace_text, set_table_cell, insert_table_row, move_blocks,
         delete_table_row, delete_blocks,
         set_paragraph_style, format_text, set_paragraph_format,
+        accept_revisions, reject_revisions,
         list_parts, read_part_xml,
     ]
     if include_raw:

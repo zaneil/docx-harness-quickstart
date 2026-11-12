@@ -108,13 +108,18 @@ def _is_on(props: etree._Element | None, tag: str) -> bool:
     return element is not None and element.get(VAL, "1") not in ("0", "false", "none")
 
 
-def run_format(r: etree._Element) -> dict:
-    """Direct formatting set on a run (style-inherited formatting is not resolved)."""
+def run_format(r: etree._Element, explicit_off: bool = False) -> dict:
+    """Direct formatting set on a run (style-inherited formatting is not
+    resolved). ``r`` is anything with a ``w:rPr`` child: a run, or a style.
+    With ``explicit_off`` a property switched off outright (``<w:b w:val="0"/>``,
+    which overrides the style) is reported as ``False`` instead of left out."""
     rpr = r.find(RPR)
     out: dict = {}
     for key, tag in (("bold", "w:b"), ("italic", "w:i"), ("underline", "w:u"), ("strike", "w:strike")):
         if _is_on(rpr, tag):
             out[key] = True
+        elif explicit_off and rpr is not None and rpr.find(qn(tag)) is not None:
+            out[key] = False
     if rpr is not None:
         color = rpr.find(qn("w:color"))
         if color is not None and color.get(VAL) not in (None, "auto"):
@@ -132,6 +137,55 @@ def run_format(r: etree._Element) -> dict:
 
 
 # ---------------------------------------------------------- paragraph format
+
+def _number(element: etree._Element, attribute: str) -> float | None:
+    try:
+        return float(element.get(qn(attribute)))
+    except (TypeError, ValueError):
+        return None
+
+
+def paragraph_format(p: etree._Element) -> dict:
+    """Direct paragraph formatting, with the same keys as
+    :func:`apply_paragraph_format` (style-inherited formatting is not
+    resolved). ``p`` is anything with a ``w:pPr`` child: a paragraph, or a style."""
+    ppr = p.find(PPR)
+    out: dict = {}
+    if ppr is None:
+        return out
+    jc = ppr.find(qn("w:jc"))
+    if jc is not None:
+        alignment = _ALIGNMENT_NAMES.get(jc.get(VAL, ""))
+        if alignment:
+            out["alignment"] = alignment
+    spacing = ppr.find(qn("w:spacing"))
+    if spacing is not None:
+        for key, attribute in (("space_before_pt", "w:before"), ("space_after_pt", "w:after")):
+            twips = _number(spacing, attribute)
+            if twips is not None:
+                out[key] = twips / 20
+        line = _number(spacing, "w:line")
+        if line is not None and spacing.get(qn("w:lineRule"), "auto") == "auto":
+            out["line_spacing"] = round(line / 240, 2)
+    ind = ppr.find(qn("w:ind"))
+    if ind is not None:
+        for key, attributes in (("indent_left_in", ("w:left", "w:start")), ("indent_right_in", ("w:right", "w:end"))):
+            twips = next((v for v in (_number(ind, a) for a in attributes) if v is not None), None)
+            if twips is not None:
+                out[key] = round(twips / 1440, 3)
+        hanging, first = _number(ind, "w:hanging"), _number(ind, "w:firstLine")
+        if hanging is not None or first is not None:
+            out["first_line_indent_in"] = round((-hanging if hanging is not None else first) / 1440, 3)
+    if _is_on(ppr, "w:pageBreakBefore"):
+        out["page_break_before"] = True
+    if _is_on(ppr, "w:keepNext"):
+        out["keep_with_next"] = True
+    return out
+
+
+_ALIGNMENT_NAMES = {"left": "left", "start": "left", "center": "center", "right": "right", "end": "right",
+                    "both": "justify", "distribute": "justify"}
+
 
 def apply_paragraph_format(
     p: etree._Element,
@@ -209,6 +263,33 @@ def list_styles(styles_root: etree._Element | None) -> list[dict]:
             "default": style.get(qn("w:default")) in ("1", "true"),
         })
     return out
+
+
+def style_format(styles_root: etree._Element | None, style_id: str | None) -> dict:
+    """What a paragraph style contributes before any direct formatting:
+    ``{"paragraph": {...}, "run": {...}}`` with the keys of
+    :func:`paragraph_format` and :func:`run_format`, resolved through the
+    document defaults and the style's ``basedOn`` chain."""
+    paragraph: dict = {}
+    run: dict = {}
+    if styles_root is None:
+        return {"paragraph": paragraph, "run": run}
+    layers: list[etree._Element] = []
+    defaults = styles_root.find(qn("w:docDefaults"))
+    if defaults is not None:
+        layers += [d for d in (defaults.find(qn("w:pPrDefault")), defaults.find(qn("w:rPrDefault"))) if d is not None]
+    styles = {s.get(qn("w:styleId")): s for s in styles_root.iter(qn("w:style")) if s.get(qn("w:type")) == "paragraph"}
+    style = styles.get(style_id) if style_id else next(
+        (s for s in styles.values() if s.get(qn("w:default")) in ("1", "true")), None)
+    chain: list[etree._Element] = []
+    while style is not None and style not in chain:  # most specific first; stop on a cycle
+        chain.append(style)
+        based_on = style.find(qn("w:basedOn"))
+        style = styles.get(based_on.get(VAL)) if based_on is not None else None
+    for layer in layers + chain[::-1]:
+        paragraph.update(paragraph_format(layer))
+        run.update(run_format(layer, explicit_off=True))
+    return {"paragraph": paragraph, "run": {k: v for k, v in run.items() if v is not False}}
 
 
 def _key(value: str) -> str:

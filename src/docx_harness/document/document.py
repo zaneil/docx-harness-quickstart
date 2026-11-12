@@ -12,6 +12,7 @@ A cell of a table is addressed as ``"<table id>[row,col]"``, for example
 from __future__ import annotations
 
 import copy
+import difflib
 import os
 import re
 from pathlib import Path
@@ -21,16 +22,32 @@ from lxml import etree
 from . import styling
 from .edits import EditContext
 from .ooxml import (
+    AUTHOR,
     BODY,
+    DEL,
+    DEL_TEXT,
+    INS,
     P,
+    MOVE_FROM,
+    MOVE_RANGE_STARTS,
+    MOVE_TO,
+    PPR_CHANGE,
+    PROPERTY_CHANGES,
     R,
     RPR,
+    RPR_CHANGE,
     SDT,
     SECTPR,
+    SETTINGS_BEFORE_TRACK_REVISIONS,
+    T,
     TBL,
     TC,
     TR,
+    TRACK_REVISIONS,
+    TRPR,
     el,
+    insert_after_any,
+    is_deleted_block,
     isolate_range,
     iter_runs,
     make_paragraph,
@@ -38,11 +55,19 @@ from .ooxml import (
     paragraph_text,
     qn,
     run_text,
+    strip_revisions,
 )
-from .package import WordPackage
+from .package import PackageError, WordPackage
 
 BLOCK_TAGS = (P, TBL, SDT)
+_TOKEN = re.compile(r"\s+|\w+|[^\w\s]")
+_REVISION_TYPES = {INS: "insert", DEL: "delete", MOVE_FROM: "move", MOVE_TO: "move",
+                   **{tag: "format" for tag in PROPERTY_CHANGES}}
 _REF = re.compile(r"^(b\d+)(?:\[\s*(\d+)\s*,\s*(\d+)\s*\])?$")
+# Text outside the body: relationship kind -> the element holding each note
+# (None when the whole part is one story).
+_STORY_KINDS = {"header": None, "footer": None, "footnotes": qn("w:footnote"), "endnotes": qn("w:endnote")}
+_NOTE_SEPARATORS = ("separator", "continuationSeparator", "continuationNotice")
 PAGE_WIDTH_TWIPS = 9360  # 6.5in text width on Letter with 1in margins
 
 
@@ -51,11 +76,39 @@ class DocumentError(ValueError):
 
 
 class WordDocument:
-    def __init__(self, package: WordPackage, *, track_changes: bool = False, author: str = "docx-harness"):
+    """``track_changes=True`` records every edit as a Word revision by
+    ``author`` (a redline the reader can accept or reject) instead of changing
+    the text directly."""
+
+    def __init__(self, package: WordPackage, *, track_changes: bool = False, author: str | None = None):
         self.package = package
-        self.edits = EditContext(track_changes=track_changes, author=author)
+        self.edits = EditContext(track_changes=track_changes, author=author or "docx-harness")
         self._counter = 0
         self._load()
+        if track_changes:
+            self.track_changes = True
+
+    @property
+    def track_changes(self) -> bool:
+        return self.edits.track_changes
+
+    @track_changes.setter
+    def track_changes(self, on: bool) -> None:
+        """Like the Track Changes switch in Word: edits from now on are
+        recorded (or not), and the saved file tells Word to keep tracking."""
+        self.edits.track_changes = bool(on)
+        part = self.package.settings_part
+        if part is None:
+            return  # nowhere to store the switch; edits are still recorded
+        settings = self.package.xml(part)
+        flag = settings.find(TRACK_REVISIONS)
+        if not on:
+            if flag is not None:
+                settings.remove(flag)
+        elif flag is None:
+            insert_after_any(settings, el("w:trackRevisions"), SETTINGS_BEFORE_TRACK_REVISIONS)
+        else:
+            flag.attrib.pop(qn("w:val"), None)  # an explicit "false" becomes on
 
     # ------------------------------------------------------------- lifecycle
 
@@ -73,6 +126,7 @@ class WordDocument:
         if body is None:
             raise DocumentError("Document has no body")
         self._body = body
+        self.edits.bind(root, *(story for _, _, story in self._story_roots()))
         self._ids: dict[str, etree._Element] = {}
         self._by_element: dict[etree._Element, str] = {}
         for element in self._block_elements():
@@ -86,7 +140,9 @@ class WordDocument:
     # -------------------------------------------------------------- block ids
 
     def _block_elements(self) -> list[etree._Element]:
-        return [child for child in self._body if child.tag in BLOCK_TAGS]
+        # Blocks removed by a tracked deletion are still in the file but are
+        # not part of the document as it reads now.
+        return [child for child in self._body if child.tag in BLOCK_TAGS and not is_deleted_block(child)]
 
     def _id_of(self, element: etree._Element) -> str:
         block_id = self._by_element.get(element)
@@ -117,10 +173,13 @@ class WordDocument:
         return element, (int(match.group(2)), int(match.group(3)))
 
     def _paragraphs_for(self, ref: str) -> list[etree._Element]:
+        for part, kind, root in self._story_roots():
+            if part == str(ref).strip():
+                return self._story_paragraphs(kind, root)
         element, cell = self._parse_ref(ref)
         if cell is not None:
-            return list(self._cell(element, *cell).iter(P))
-        return list(element.iter(P))
+            return _live_paragraphs(self._cell(element, *cell))
+        return _live_paragraphs(element)
 
     def _paragraph(self, block_id: str) -> etree._Element:
         element = self._get(block_id)
@@ -138,29 +197,73 @@ class WordDocument:
     def _type(element: etree._Element) -> str:
         return {P: "paragraph", TBL: "table", SDT: "content_control"}[element.tag]
 
+    # ---------------------------------------------- headers, footers, notes
+
+    def _story_roots(self) -> list[tuple[str, str, etree._Element]]:
+        """(part name, kind, root) of every header, footer, footnotes and
+        endnotes part of the document."""
+        found = []
+        for kind in _STORY_KINDS:
+            for part in self.package.related_parts(kind):
+                try:
+                    found.append((part, kind, self.package.xml(part)))
+                except PackageError:
+                    continue  # unreadable part: leave it alone
+        return found
+
+    @staticmethod
+    def _story_paragraphs(kind: str, root: etree._Element) -> list[etree._Element]:
+        note = _STORY_KINDS[kind]
+        if note is None:
+            return _live_paragraphs(root)
+        return [
+            p for holder in root.iter(note) if holder.get(qn("w:type")) not in _NOTE_SEPARATORS
+            for p in _live_paragraphs(holder)
+        ]
+
+    def stories(self) -> list[dict]:
+        """The text outside the body: one entry per header, footer, footnotes
+        or endnotes part, with its ``part`` name, ``kind`` and ``paragraphs``
+        (their text). The part name works as ``ref`` in :meth:`replace_text`."""
+        return [
+            {"part": part, "kind": kind, "paragraphs": [paragraph_text(p) for p in self._story_paragraphs(kind, root)]}
+            for part, kind, root in self._story_roots()
+        ]
+
     # ------------------------------------------------------------------ read
 
     @staticmethod
     def _cell_text(tc: etree._Element) -> str:
-        return "\n".join(paragraph_text(p) for p in tc.iter(P))
+        return "\n".join(paragraph_text(p) for p in _live_paragraphs(tc))
+
+    @staticmethod
+    def _live_rows(tbl: etree._Element) -> list[etree._Element]:
+        """Rows that have not been removed by a tracked deletion."""
+        return [tr for tr in tbl.findall(TR) if not is_deleted_block(tr)]
 
     def _rows(self, tbl: etree._Element) -> list[list[str]]:
-        return [[self._cell_text(tc) for tc in tr.findall(TC)] for tr in tbl.findall(TR)]
+        return [[self._cell_text(tc) for tc in tr.findall(TC)] for tr in self._live_rows(tbl)]
 
-    def _describe(self, element: etree._Element, include_formatting: bool = False) -> dict:
+    def _describe(self, element: etree._Element, include_formatting: bool = False, resolve_styles: bool = False) -> dict:
         info: dict = {"id": self._id_of(element), "type": self._type(element)}
         if element.tag == P:
             info["style"] = styling.style_name(self._styles, styling.paragraph_style_id(element))
             info["text"] = paragraph_text(element)
             if include_formatting:
+                layout = styling.paragraph_format(element)
+                if layout:
+                    info["format"] = layout
+                if resolve_styles:
+                    info["style_format"] = styling.style_format(self._styles, styling.paragraph_style_id(element))
                 info["runs"] = [
-                    {"text": run_text(r), **styling.run_format(r)}
+                    {"text": run_text(r), **styling.run_format(r, explicit_off=resolve_styles),
+                     **({"inserted": True} if r.getparent().tag in (INS, MOVE_TO) else {})}
                     for r in iter_runs(element) if run_text(r)
                 ]
         elif element.tag == TBL:
             info["rows"] = self._rows(element)
         else:
-            info["text"] = "\n".join(paragraph_text(p) for p in element.iter(P))
+            info["text"] = "\n".join(paragraph_text(p) for p in _live_paragraphs(element))
         return info
 
     def __len__(self) -> int:
@@ -189,24 +292,31 @@ class WordDocument:
         index = elements.index(self._get(start)) if start else 0
         return elements[index:index + max(count, 0)]
 
-    def read(self, start: str | None = None, count: int = 20, include_formatting: bool = False) -> dict:
-        """Full content of ``count`` blocks beginning at ``start`` (inclusive)."""
+    def read(self, start: str | None = None, count: int = 20, include_formatting: bool = False,
+             resolve_styles: bool = False) -> dict:
+        """Full content of ``count`` blocks beginning at ``start`` (inclusive).
+
+        ``include_formatting`` adds each paragraph's direct formatting:
+        ``format`` (alignment, spacing, indents; left out when there is none)
+        and ``runs``. ``resolve_styles`` also adds ``style_format``, what the
+        paragraph's style supplies underneath, for rendering a preview."""
         elements = self._block_elements()
         index = elements.index(self._get(start)) if start else 0
         chunk = elements[index:index + max(count, 0)]
         following = elements[index + len(chunk):index + len(chunk) + 1]
         return {
-            "blocks": [self._describe(e, include_formatting) for e in chunk],
+            "blocks": [self._describe(e, include_formatting, resolve_styles) for e in chunk],
             "next": self._id_of(following[0]) if following else None,
             "total_blocks": len(elements),
         }
 
     def text(self) -> str:
         """Plain text of the whole body, one paragraph per line."""
-        return "\n".join(paragraph_text(p) for p in self._body.iter(P))
+        return "\n".join(paragraph_text(p) for p in _live_paragraphs(self._body))
 
     def search(self, query: str, case_sensitive: bool = False, limit: int = 50) -> list[dict]:
-        """Find blocks (or table cells) containing ``query``."""
+        """Find blocks (or table cells) containing ``query``. Headers, footers
+        and notes are searched too; their hits have the part name as ``ref``."""
         if not query:
             raise DocumentError("query must not be empty")
         pattern = re.compile(re.escape(query), 0 if case_sensitive else re.IGNORECASE)
@@ -226,22 +336,37 @@ class WordDocument:
                     for c, cell in enumerate(row):
                         check(f"{block_id}[{r},{c}]", cell)
             else:
-                check(block_id, "\n".join(paragraph_text(p) for p in element.iter(P)))
+                check(block_id, "\n".join(paragraph_text(p) for p in _live_paragraphs(element)))
+        for story in self.stories():
+            check(story["part"], "\n".join(story["paragraphs"]))
         return hits
 
     # ----------------------------------------------------------------- write
 
-    def _insert(self, new: etree._Element, after: str) -> str:
+    def _index_after(self, after: str) -> int:
+        """Position in the body for content placed after ``after``."""
         after = str(after).strip()
         if after == "end":
             last = self._body[-1] if len(self._body) else None
-            index = len(self._body) - 1 if last is not None and last.tag == SECTPR else len(self._body)
-        elif after == "start":
-            index = 0
-        else:
-            index = self._body.index(self._get(after)) + 1
-        self.edits.insert_block(self._body, index, new)
+            return len(self._body) - 1 if last is not None and last.tag == SECTPR else len(self._body)
+        if after == "start":
+            return 0
+        return self._body.index(self._get(after)) + 1
+
+    def _insert(self, new: etree._Element, after: str) -> str:
+        self.edits.insert_block(self._body, self._index_after(after), new)
         return self._id_of(new)
+
+    def move_block(self, block_id: str, after: str) -> None:
+        """Move a block to after block ``after`` ("start", "end" or a block
+        id). The block keeps its id. When changes are tracked, a paragraph is
+        recorded as a move and a table as a deletion plus an insertion."""
+        element = self._get(block_id)
+        moved = self.edits.move_block(element, self._body, self._index_after(after))
+        if moved is not element:  # tracked: the id follows the content to its new place
+            block_id = self._by_element.pop(element)
+            self._ids[block_id] = moved
+            self._by_element[moved] = block_id
 
     def _style_id(self, style: str | None, style_type: str = "paragraph") -> str | None:
         if not style:
@@ -310,7 +435,58 @@ class WordDocument:
 
     # ---------------------------------------------------------------- update
 
+    def _replace_range(self, p: etree._Element, start: int, end: int, text: str) -> None:
+        """Replace characters ``[start, end)`` of a paragraph with ``text``,
+        which takes the formatting of the text it replaces or follows."""
+        if end > start:
+            runs = isolate_range(p, start, end)
+            if text:
+                new = make_run(text, runs[0].find(RPR))
+                if self.edits.tracking:
+                    # Redlines read best as old text, then new text.
+                    parent = runs[-1].getparent()
+                    self.edits.insert_run(parent, parent.index(runs[-1]) + 1, new)
+                else:
+                    parent = runs[0].getparent()
+                    self.edits.insert_run(parent, parent.index(runs[0]), new)
+            for run in runs:
+                self.edits.delete_run(run)
+        elif text:
+            before = isolate_range(p, 0, start) if start > 0 else []
+            if before:
+                anchor, offset = before[-1], 1
+            else:
+                runs = list(iter_runs(p))
+                anchor = next((r for r in runs if run_text(r)), runs[0] if runs else None)
+                offset = 0
+            if anchor is None:
+                self.edits.insert_run(p, len(p), make_run(text))
+            else:
+                parent = anchor.getparent()
+                self.edits.insert_run(parent, parent.index(anchor) + offset, make_run(text, anchor.find(RPR)))
+
+    def _revise_paragraph_text(self, p: etree._Element, text: str) -> None:
+        """Change a paragraph's text by editing only the words that differ, so
+        a tracked rewrite shows as a few revisions rather than the whole
+        paragraph struck out and retyped."""
+        old, new = paragraph_text(p), make_run_text(text)
+        a, b = _TOKEN.findall(old), _TOKEN.findall(new)
+        matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+        if matcher.ratio() < 0.5:
+            self._replace_range(p, 0, len(old), new)  # too different: one clean replacement
+            return
+        offsets = [0]
+        for token in a:
+            offsets.append(offsets[-1] + len(token))
+        # Right to left, so earlier offsets stay valid as the text changes.
+        for tag, i1, i2, j1, j2 in reversed(matcher.get_opcodes()):
+            if tag != "equal":
+                self._replace_range(p, offsets[i1], offsets[i2], "".join(b[j1:j2]))
+
     def _set_paragraph_text(self, p: etree._Element, text: str) -> None:
+        if self.edits.tracking:
+            self._revise_paragraph_text(p, text)
+            return
         runs = list(iter_runs(p))
         rpr = next((r.find(RPR) for r in runs if run_text(r) and r.find(RPR) is not None), None)
         for run in runs:
@@ -330,25 +506,25 @@ class WordDocument:
             match = pattern.search(paragraph_text(p), pos)
             if match is None or match.end() == match.start():
                 return count
-            runs = isolate_range(p, match.start(), match.end())
-            first = runs[0]
-            if replacement:
-                parent = first.getparent()
-                self.edits.insert_run(parent, parent.index(first), make_run(replacement, first.find(RPR)))
-            for run in runs:
-                self.edits.delete_run(run)
+            self._replace_range(p, match.start(), match.end(), replacement)
             pos = match.start() + len(make_run_text(replacement))
             count += 1
 
     def replace_text(self, find: str, replace: str, ref: str | None = None, case_sensitive: bool = True) -> int:
         """Replace every occurrence of ``find``. Matches may span differently
         formatted runs; the replacement takes the formatting at the start of
-        the match. Scope is the whole document, or one block / table cell when
-        ``ref`` is given. Returns the number of replacements."""
+        the match. Scope is the whole document (headers, footers and notes
+        included, as with Replace All in Word), or one block, table cell or
+        story part when ``ref`` is given. Returns the number of replacements."""
         if not find:
             raise DocumentError("find must not be empty")
         pattern = re.compile(re.escape(find), 0 if case_sensitive else re.IGNORECASE)
-        paragraphs = self._paragraphs_for(ref) if ref else list(self._body.iter(P))
+        if ref:
+            paragraphs = self._paragraphs_for(ref)
+        else:
+            paragraphs = _live_paragraphs(self._body)
+            for _, kind, root in self._story_roots():
+                paragraphs += self._story_paragraphs(kind, root)
         return sum(self._replace_in_paragraph(p, pattern, replace) for p in paragraphs)
 
     # ---------------------------------------------------------------- tables
@@ -356,7 +532,7 @@ class WordDocument:
     def _cell(self, tbl: etree._Element, row: int, col: int) -> etree._Element:
         if tbl.tag != TBL:
             raise DocumentError("Cell references like 'b3[0,1]' only apply to tables.")
-        rows = tbl.findall(TR)
+        rows = self._live_rows(tbl)
         if not 0 <= row < len(rows):
             raise DocumentError(f"Row {row} is out of range; the table has {len(rows)} rows (zero-based).")
         cells = rows[row].findall(TC)
@@ -365,7 +541,7 @@ class WordDocument:
         return cells[col]
 
     def _set_cell(self, tc: etree._Element, text: str) -> None:
-        paragraphs = tc.findall(P)
+        paragraphs = [p for p in tc.findall(P) if not is_deleted_block(p)]
         if not paragraphs:
             paragraphs = [make_paragraph()]
             self.edits.insert_block(tc, len(tc), paragraphs[0])
@@ -380,7 +556,7 @@ class WordDocument:
         """Insert a row at ``index`` (default: append). The new row copies the
         layout of a neighbouring row. Returns the index of the new row."""
         tbl = self._table(table_id)
-        rows = tbl.findall(TR)
+        rows = self._live_rows(tbl)
         if not rows:
             raise DocumentError("Table has no rows to copy the layout from.")
         if index is None:
@@ -391,11 +567,13 @@ class WordDocument:
         # row is not used as the pattern for data rows.
         source = rows[0] if len(rows) == 1 else rows[max(index - 1, 1)] if index > 0 else rows[0]
         new_row = copy.deepcopy(source)
+        strip_revisions(new_row)  # the copy starts clean; it is tracked as one inserted row
         new_cells = new_row.findall(TC)
         if len(cells) > len(new_cells):
             raise DocumentError(f"Got {len(cells)} cells but the table has {len(new_cells)} columns.")
-        for i, tc in enumerate(new_cells):
-            self._set_cell(tc, str(cells[i]) if i < len(cells) else "")
+        with self.edits.untracked():
+            for i, tc in enumerate(new_cells):
+                self._set_cell(tc, str(cells[i]) if i < len(cells) else "")
         if index == len(rows):
             anchor = rows[-1]
             self.edits.insert_block(tbl, tbl.index(anchor) + 1, new_row)
@@ -405,7 +583,7 @@ class WordDocument:
 
     def delete_table_row(self, table_id: str, row: int) -> None:
         tbl = self._table(table_id)
-        rows = tbl.findall(TR)
+        rows = self._live_rows(tbl)
         if not 0 <= row < len(rows):
             raise DocumentError(f"Row {row} is out of range; the table has {len(rows)} rows (zero-based).")
         if len(rows) == 1:
@@ -432,6 +610,7 @@ class WordDocument:
         changed = 0
         for p in self._paragraphs_for(ref):
             if styling.paragraph_style_id(p) != style_id:
+                self.edits.before_paragraph_format(p)
                 styling.set_paragraph_style(p, style_id)
                 changed += 1
         return changed
@@ -454,6 +633,7 @@ class WordDocument:
             else:
                 runs = list(iter_runs(p))
             for run in runs:
+                self.edits.before_run_format(run)
                 styling.apply_run_format(run, **fmt)
             changed += len(runs)
         if match and changed == 0:
@@ -468,8 +648,135 @@ class WordDocument:
             raise DocumentError("Give at least one paragraph property (alignment, space_after_pt...).")
         paragraphs = self._paragraphs_for(ref)
         for p in paragraphs:
+            self.edits.before_paragraph_format(p)
             styling.apply_paragraph_format(p, **fmt)
         return len(paragraphs)
+
+    # ------------------------------------------------------------- revisions
+
+    def revisions(self) -> list[dict]:
+        """Tracked changes pending in the document, in document order: the
+        body first, then headers, footers and notes.
+
+        Each entry has ``id``, ``type`` (insert, delete, format or move; a move
+        has two halves, told apart by ``move``: "from" or "to"), ``author``,
+        ``date``, ``block`` (the block id, or None when the block itself is
+        deleted or the revision is outside the body, in which case ``part``
+        names where it is) and ``text`` (the inserted, deleted or reformatted
+        text; a whole inserted or deleted paragraph or row adds an entry with
+        empty text and a ``target``)."""
+        out: list[dict] = []
+        for part, node in self._revision_nodes():
+            parent = node.getparent()
+            entry = {
+                "id": node.get(qn("w:id")),
+                "type": _REVISION_TYPES[node.tag],
+                "author": node.get(AUTHOR),
+                "date": node.get(qn("w:date")),
+                "block": None,
+                "text": "",
+            }
+            if node.tag in (MOVE_FROM, MOVE_TO):
+                entry["move"] = "from" if node.tag == MOVE_FROM else "to"
+            if node.tag == PPR_CHANGE:
+                entry["target"] = "paragraph format"
+                entry["text"] = paragraph_text(parent.getparent())
+            elif node.tag == RPR_CHANGE:
+                entry["text"] = run_text(parent.getparent())
+            elif node.tag in PROPERTY_CHANGES:
+                entry["target"] = "table format"
+            elif parent.tag == TRPR:
+                entry["target"] = "table row"
+            elif parent.tag == RPR:
+                entry["target"] = "paragraph"
+            else:
+                entry["text"] = "".join(t.text or "" for t in node.iter(T, DEL_TEXT))
+            if part is None:
+                top = self._top(node)
+                entry["block"] = self._by_element.get(top) if not is_deleted_block(top) else None
+            else:
+                entry["part"] = part
+            out.append(entry)
+        return out
+
+    def _revision_nodes(self) -> list[tuple[str | None, etree._Element]]:
+        """Every revision element with the story part it is in (None: the body)."""
+        nodes = [(None, node) for node in self._body.iter(*_REVISION_TYPES)]
+        for part, _, root in self._story_roots():
+            nodes += [(part, node) for node in root.iter(*_REVISION_TYPES)]
+        return nodes
+
+    def _top(self, node: etree._Element) -> etree._Element:
+        """The body-level element that contains ``node``."""
+        while node.getparent() is not None and node.getparent() is not self._body:
+            node = node.getparent()
+        return node
+
+    def accept_revisions(self, ids: list[str] | None = None, author: str | None = None, block: str | None = None) -> int:
+        """Make tracked changes permanent. With no arguments every revision is
+        accepted; ``ids`` (from :meth:`revisions`), ``author`` and ``block``
+        narrow the selection. Returns the number of revisions resolved."""
+        return self._resolve(True, ids, author, block)
+
+    def reject_revisions(self, ids: list[str] | None = None, author: str | None = None, block: str | None = None) -> int:
+        """Undo tracked changes, restoring the text and formatting from before
+        them. Selection works as in :meth:`accept_revisions`."""
+        return self._resolve(False, ids, author, block)
+
+    def _resolve(self, accept: bool, ids: list[str] | None, author: str | None, block: str | None) -> int:
+        wanted = None if ids is None else {str(i).strip() for i in ([ids] if isinstance(ids, (str, int)) else ids)}
+        scope = self._get(block) if block else None
+        nodes = [
+            node for part, node in self._revision_nodes()
+            if (wanted is None or node.get(qn("w:id")) in wanted)
+            and (author is None or node.get(AUTHOR) == author)
+            and (scope is None or (part is None and self._top(node) is scope))
+        ]
+        roots = [self._body] + [root for _, _, root in self._story_roots()]
+        # The two halves of a move are resolved together.
+        names = {self._move_name(node) for node in nodes if node.tag in (MOVE_FROM, MOVE_TO)} - {None}
+        if names:
+            chosen = set(nodes)
+            nodes += [node for _, node in self._revision_nodes()
+                      if node not in chosen and node.tag in (MOVE_FROM, MOVE_TO) and self._move_name(node) in names]
+            for root in roots:
+                self.edits.remove_move_ranges(root, names)
+        if wanted is not None:
+            missing = wanted - {node.get(qn("w:id")) for node in nodes}
+            if missing:
+                raise DocumentError(
+                    f"No pending revision with id {', '.join(sorted(missing))}. Nothing was changed. "
+                    "List the revisions again to see current ids."
+                )
+
+        def is_mark(node: etree._Element) -> bool:  # on a paragraph mark or a table row
+            return node.tag not in PROPERTY_CHANGES and node.getparent().tag in (RPR, TRPR)
+
+        # Text first, then paragraph marks and rows: a paragraph whose inserted
+        # text was rejected is empty by the time its mark is, and goes entirely.
+        for node in sorted(nodes, key=is_mark):
+            if any(ancestor is root for ancestor in node.iterancestors() for root in roots):
+                self.edits.resolve(node, accept)
+        for root in roots:
+            if next(root.iter(MOVE_FROM, MOVE_TO), None) is None:
+                self.edits.remove_move_ranges(root)  # no moves left: no stray range markers either
+        self._sync_ids()
+        return len(nodes)
+
+    @staticmethod
+    def _move_name(node: etree._Element) -> str | None:
+        """The name of the move range a ``w:moveFrom`` / ``w:moveTo`` belongs to."""
+        start_tag = MOVE_RANGE_STARTS[0 if node.tag == MOVE_FROM else 1]
+        paragraph = next((a for a in node.iterancestors() if a.tag == P), None)
+        start = paragraph.find(start_tag) if paragraph is not None else None
+        return start.get(qn("w:name")) if start is not None else None
+
+    def _sync_ids(self) -> None:
+        """Forget blocks that left the body and give ids to blocks that came back."""
+        for element in [e for e in self._by_element if e.getparent() is not self._body]:
+            self._ids.pop(self._by_element.pop(element), None)
+        for element in self._block_elements():
+            self._id_of(element)
 
     # ------------------------------------------------------------- raw parts
 
@@ -485,6 +792,11 @@ class WordDocument:
         self.package.write_xml(name, xml)
         if name == self.package.main_document_part:
             self._load()
+
+
+def _live_paragraphs(element: etree._Element) -> list[etree._Element]:
+    """Paragraphs in ``element`` (itself included) not removed by a tracked deletion."""
+    return [p for p in element.iter(P) if not is_deleted_block(p)]
 
 
 def make_run_text(text: str) -> str:

@@ -40,6 +40,23 @@ BODY = qn("w:body")
 DEL = qn("w:del")
 INS = qn("w:ins")
 MOVE_FROM = qn("w:moveFrom")
+MOVE_TO = qn("w:moveTo")
+MOVE_RANGE_STARTS = (qn("w:moveFromRangeStart"), qn("w:moveToRangeStart"))
+MOVE_RANGE_ENDS = (qn("w:moveFromRangeEnd"), qn("w:moveToRangeEnd"))
+DEL_TEXT = qn("w:delText")
+INSTR_TEXT = qn("w:instrText")
+DEL_INSTR_TEXT = qn("w:delInstrText")
+TRPR = qn("w:trPr")
+TCPR = qn("w:tcPr")
+TBLPR = qn("w:tblPr")
+TBLPREX = qn("w:tblPrEx")
+RPR_CHANGE = qn("w:rPrChange")
+PPR_CHANGE = qn("w:pPrChange")
+TRPR_CHANGE = qn("w:trPrChange")
+TCPR_CHANGE = qn("w:tcPrChange")
+TBLPR_CHANGE = qn("w:tblPrChange")
+PROPERTY_CHANGES = (RPR_CHANGE, PPR_CHANGE, TRPR_CHANGE, TCPR_CHANGE, TBLPR_CHANGE)
+AUTHOR = qn("w:author")
 XML_SPACE = f"{{{XML_NS}}}space"
 
 # Child order required by the schema (CT_RPr / CT_PPr). Word can refuse files
@@ -50,7 +67,7 @@ RPR_ORDER = [
     "w:noProof", "w:snapToGrid", "w:vanish", "w:webHidden", "w:color", "w:spacing",
     "w:w", "w:kern", "w:position", "w:sz", "w:szCs", "w:highlight", "w:u", "w:effect",
     "w:bdr", "w:shd", "w:fitText", "w:vertAlign", "w:rtl", "w:cs", "w:em", "w:lang",
-    "w:eastAsianLayout", "w:specVanish", "w:oMath",
+    "w:eastAsianLayout", "w:specVanish", "w:oMath", "w:rPrChange",
 ]
 PPR_ORDER = [
     "w:pStyle", "w:keepNext", "w:keepLines", "w:pageBreakBefore", "w:framePr",
@@ -62,6 +79,19 @@ PPR_ORDER = [
     "w:textboxTightWrap", "w:outlineLvl", "w:divId", "w:cnfStyle", "w:rPr",
     "w:sectPr", "w:pPrChange",
 ]
+# The children of w:settings (CT_Settings) that come before w:trackRevisions.
+SETTINGS_BEFORE_TRACK_REVISIONS = [
+    "w:writeProtection", "w:view", "w:zoom", "w:removePersonalInformation",
+    "w:removeDateAndTime", "w:doNotDisplayPageBoundaries", "w:displayBackgroundShape",
+    "w:printPostScriptOverText", "w:printFractionalCharacterWidth", "w:printFormsData",
+    "w:embedTrueTypeFonts", "w:embedSystemFonts", "w:saveSubsetFonts", "w:saveFormsData",
+    "w:mirrorMargins", "w:alignBordersAndEdges", "w:bordersDoNotSurroundHeader",
+    "w:bordersDoNotSurroundFooter", "w:gutterAtTop", "w:hideSpellingErrors",
+    "w:hideGrammaticalErrors", "w:activeWritingStyle", "w:proofState", "w:formsDesign",
+    "w:attachedTemplate", "w:linkStyles", "w:stylePaneFormatFilter", "w:stylePaneSortMethod",
+    "w:documentType", "w:mailMerge", "w:revisionView",
+]
+TRACK_REVISIONS = qn("w:trackRevisions")
 
 
 def el(tag: str, attrs: dict[str, str] | None = None, *children: etree._Element) -> etree._Element:
@@ -87,6 +117,17 @@ def ensure_child(parent: etree._Element, tag: str, order: list[str]) -> etree._E
             return new
     parent.append(new)
     return new
+
+
+def insert_after_any(parent: etree._Element, new: etree._Element, earlier: list[str]) -> None:
+    """Insert ``new`` after the last child of ``parent`` whose tag is in
+    ``earlier`` (the tags the schema puts before it), or first if there is none."""
+    tags = {qn(t) for t in earlier}
+    index = 0
+    for position, child in enumerate(parent):
+        if child.tag in tags:
+            index = position + 1
+    parent.insert(index, new)
 
 
 def remove_child(parent: etree._Element, tag: str) -> None:
@@ -150,7 +191,9 @@ def make_run(text: str, rpr: etree._Element | None = None) -> etree._Element:
     """Create a run holding ``text``, optionally copying run properties."""
     r = el("w:r")
     if rpr is not None:
-        r.append(copy.deepcopy(rpr))
+        rpr = copy.deepcopy(rpr)
+        remove_child(rpr, "w:rPrChange")  # a new run has no formatting history
+        r.append(rpr)
     append_text(r, text)
     return r
 
@@ -254,3 +297,60 @@ def isolate_range(p: etree._Element, start: int, end: int) -> list[etree._Elemen
             current, _ = split_run(current, end - r_start)
         covered.append(current)
     return covered
+
+
+# --------------------------------------------------------------------------
+# Tracked changes (revisions)
+# --------------------------------------------------------------------------
+
+def paragraph_mark(p: etree._Element, tag: str) -> etree._Element | None:
+    """The ``w:ins`` or ``w:del`` (``tag``) recorded on a paragraph mark."""
+    ppr = p.find(PPR)
+    rpr = ppr.find(RPR) if ppr is not None else None
+    return rpr.find(tag) if rpr is not None else None
+
+
+def row_mark(tr: etree._Element, tag: str) -> etree._Element | None:
+    """The ``w:ins`` or ``w:del`` (``tag``) recorded on a table row."""
+    trpr = tr.find(TRPR)
+    return trpr.find(tag) if trpr is not None else None
+
+
+def is_deleted_block(element: etree._Element) -> bool:
+    """True when a tracked deletion (or a tracked move to somewhere else) has
+    removed this whole paragraph, table row, table or content control. It is
+    still in the file until the change is accepted."""
+    if element.tag == P:
+        gone = paragraph_mark(element, DEL) is not None or paragraph_mark(element, MOVE_FROM) is not None
+        return gone and next(iter_runs(element), None) is None
+    if element.tag == TR:
+        return row_mark(element, DEL) is not None
+    if element.tag == TBL:
+        rows = element.findall(TR)
+        return bool(rows) and all(is_deleted_block(tr) for tr in rows)
+    if element.tag == SDT:
+        paragraphs = list(element.iter(P))
+        return bool(paragraphs) and all(is_deleted_block(p) for p in paragraphs)
+    return False
+
+
+def strip_revisions(element: etree._Element) -> None:
+    """Make a detached copy read as if every revision in it were accepted:
+    deleted content is dropped, insertions are unwrapped, marks are removed."""
+    for node in list(element.iter(DEL, MOVE_FROM, *PROPERTY_CHANGES, *MOVE_RANGE_STARTS, *MOVE_RANGE_ENDS)):
+        parent = node.getparent()
+        if parent is not None:
+            parent.remove(node)
+    for node in list(element.iter(INS, MOVE_TO)):
+        if node.getparent() is not None:
+            unwrap(node)
+
+
+def unwrap(node: etree._Element) -> None:
+    """Replace ``node`` with its children."""
+    parent = node.getparent()
+    index = parent.index(node)
+    for child in list(node):
+        parent.insert(index, child)
+        index += 1
+    parent.remove(node)
