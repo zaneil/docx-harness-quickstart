@@ -111,12 +111,12 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
 
     @tool(read_only=True)
     def read_blocks(start: Optional[str] = None, count: int = 20, include_formatting: bool = False) -> str:
-        """Read the full content of consecutive blocks. Paragraphs return their text and style; tables return their rows.
+        """Read the full content of consecutive blocks. Paragraphs return text and style. Tables return rows on the column grid, plus 'merged' (cells spanning several positions) and 'nested' (ids of tables inside cells) when present.
 
         Args:
-            start: Id of the first block to read. Omit to start at the top.
+            start: Id of the first block to read, or the id of a nested table to read just that table. Omit to start at the top.
             count: Number of blocks to read.
-            include_formatting: Also return each paragraph's alignment, spacing and indents, and its runs with bold, italic, color and size.
+            include_formatting: Also return paragraph alignment, spacing, indents and runs (bold, italic, color, size), and for tables column widths, header rows and cell shading.
         """
         return json.dumps(doc.read(start, count, include_formatting), ensure_ascii=False)
 
@@ -185,16 +185,23 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         return f"Inserted {len(ids)} paragraph(s): {', '.join(ids)}"
 
     @tool
-    def insert_table(rows: list[list[str]], after: str = "end", header: bool = True, style: str = "Table Grid") -> str:
+    def insert_table(
+        rows: list[list[str]],
+        after: str = "end",
+        header: bool = True,
+        style: str = "Table Grid",
+        column_widths_in: Optional[list[float]] = None,
+    ) -> str:
         """Insert a table.
 
         Args:
-            rows: Table content as a list of rows; each row is a list of cell texts.
+            rows: Table content as a list of rows; each row is a list of cell texts. A newline inside a cell text starts a new paragraph.
             after: Where to insert: a block id (insert after it), 'start' or 'end'.
-            header: Make the first row bold.
+            header: Make the first row a header: bold, and repeated at the top of each page.
             style: Table style name.
+            column_widths_in: Width of each column in inches. Omit to share the page width equally.
         """
-        block_id = doc.insert_table(rows, after, style, header)
+        block_id = doc.insert_table(rows, after, style, header, column_widths_in)
         return f"Inserted table {block_id} ({len(rows)} rows). Cells are addressed as {block_id}[row,col]."
 
     @tool
@@ -234,12 +241,12 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
 
     @tool
     def set_table_cell(table_id: str, row: int, col: int, text: str) -> str:
-        """Set the text of one table cell.
+        """Set the text of one table cell. Each line of the text is one paragraph, matched to the cell's existing paragraphs so they keep their formatting. For a small wording change prefer replace_text with block='b3[row,col]'.
 
         Args:
             table_id: Id of the table block.
             row: Zero-based row index.
-            col: Zero-based column index.
+            col: Zero-based column index on the table's grid. Any position inside a merged cell edits that merged cell.
             text: The new cell text.
         """
         doc.set_cell_text(table_id, row, col, text)
@@ -247,7 +254,7 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
 
     @tool
     def insert_table_row(table_id: str, cells: list[str], index: Optional[int] = None) -> str:
-        """Add a row to an existing table.
+        """Add a row to an existing table. The row copies the layout of the row next to it.
 
         Args:
             table_id: Id of the table block.
@@ -255,6 +262,51 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
             index: Zero-based position for the new row. Omit to append at the bottom.
         """
         return f"Inserted row {doc.insert_table_row(table_id, cells, index)} in {table_id}"
+
+    @tool
+    def insert_table_column(
+        table_id: str,
+        cells: Optional[list[str]] = None,
+        index: Optional[int] = None,
+        width_in: Optional[float] = None,
+    ) -> str:
+        """Add a column to an existing table. The new cells copy the look of the column beside them.
+
+        Args:
+            table_id: Id of the table block.
+            cells: Cell texts for the new column, top to bottom, one per row starting at row 0; use '' for rows to leave empty, such as a title row above the headings. Omit for an empty column.
+            index: Zero-based position for the new column. Omit to add it on the right.
+            width_in: Width of the new column in inches. Omit to match its neighbour and keep the table's overall width.
+        """
+        position = doc.insert_table_column(table_id, index, cells, width_in)
+        return f"Inserted column {position} in {table_id}; columns to its right moved up by one."
+
+    @tool
+    def merge_table_cells(table_id: str, row: int, col: int, end_row: int, end_col: int) -> str:
+        """Merge a rectangle of table cells into one cell, e.g. a heading across several columns. Text from all the cells is kept. The merged cell is addressed by its top-left position.
+
+        Args:
+            table_id: Id of the table block.
+            row: Zero-based row of the top-left cell.
+            col: Zero-based column of the top-left cell.
+            end_row: Zero-based row of the bottom-right cell.
+            end_col: Zero-based column of the bottom-right cell.
+        """
+        doc.merge_cells(table_id, row, col, end_row, end_col)
+        top, left = min(row, end_row), min(col, end_col)
+        return f"Merged into {table_id}[{top},{left}] ({abs(end_row - row) + 1} row(s) by {abs(end_col - col) + 1} column(s))."
+
+    @tool
+    def unmerge_table_cells(table_id: str, row: int, col: int) -> str:
+        """Split a merged table cell back into single cells. Its text stays in the top-left one.
+
+        Args:
+            table_id: Id of the table block.
+            row: Zero-based row of any position inside the merged cell.
+            col: Zero-based column of any position inside the merged cell.
+        """
+        doc.unmerge_cells(table_id, row, col)
+        return f"Split the merged cell at {table_id}[{row},{col}] into single cells."
 
     @tool
     def move_blocks(block_ids: list[str], after: str) -> str:
@@ -288,11 +340,22 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         return f"Deleted row {row} of {table_id}"
 
     @tool
+    def delete_table_column(table_id: str, col: int) -> str:
+        """Delete one column of a table.
+
+        Args:
+            table_id: Id of the table block.
+            col: Zero-based column index on the table's grid.
+        """
+        doc.delete_table_column(table_id, col)
+        return f"Deleted column {col} of {table_id}; columns to its right moved down by one."
+
+    @tool
     def delete_blocks(block_ids: list[str]) -> str:
         """Delete blocks (paragraphs or whole tables) from the document.
 
         Args:
-            block_ids: Ids of the blocks to delete.
+            block_ids: Ids of the blocks to delete. The id of a nested table deletes that table from its cell.
         """
         if isinstance(block_ids, str):
             block_ids = [block_ids]
@@ -307,7 +370,7 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         """Change which named paragraph style blocks use (e.g. turn body text into 'Heading 2' or 'List Bullet'). To change color, size or font, use format_text instead.
 
         Args:
-            blocks: Block ids or table cells like 'b3[0,1]'.
+            blocks: Block ids, table cells like 'b3[0,1]', table rows like 'b3[0,*]' or table columns like 'b3[*,1]'.
             style: Style name. Use list_styles to see what is available.
         """
         if isinstance(blocks, str):
@@ -336,7 +399,7 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         """Apply character formatting to whole blocks, or only to occurrences of some text inside them.
 
         Args:
-            blocks: Block ids or table cells like 'b3[0,1]'. A table id formats the whole table.
+            blocks: Block ids, table cells like 'b3[0,1]', table rows like 'b3[0,*]' or table columns like 'b3[*,1]'. A table id formats the whole table.
             match: Only format this exact text within the blocks. Omit to format all text.
             bold: Turn bold on or off.
             italic: Turn italic on or off.
@@ -374,7 +437,7 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         """Set paragraph layout: alignment, spacing and indentation.
 
         Args:
-            blocks: Block ids or table cells like 'b3[0,1]'.
+            blocks: Block ids, table cells like 'b3[0,1]', table rows like 'b3[0,*]' or table columns like 'b3[*,1]'.
             alignment: Horizontal alignment.
             space_before_pt: Space above the paragraph in points.
             space_after_pt: Space below the paragraph in points.
@@ -397,6 +460,49 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
             for ref in blocks
         )
         return f"Formatted {count} paragraph(s)."
+
+    @tool
+    def format_table_cells(
+        cells: list[str],
+        shading: Optional[str] = None,
+        vertical_align: Optional[Literal["top", "center", "bottom"]] = None,
+    ) -> str:
+        """Set the background color and vertical alignment of table cells. For the text in the cells (bold, color, horizontal alignment) use format_text and set_paragraph_format with the same references.
+
+        Args:
+            cells: Cells like 'b3[0,1]', rows like 'b3[0,*]', columns like 'b3[*,1]', or a table id for every cell.
+            shading: Background color as 6-digit hex (e.g. 'D9E2F3') or a basic color name; 'none' removes it.
+            vertical_align: Where the text sits in the cell.
+        """
+        if isinstance(cells, str):
+            cells = [cells]
+        count = sum(doc.format_cells(ref, shading, vertical_align) for ref in cells)
+        return f"Formatted {count} cell(s)."
+
+    @tool
+    def set_table_format(
+        table_id: str,
+        column_widths_in: Optional[list[float]] = None,
+        header_rows: Optional[int] = None,
+        alignment: Optional[Literal["left", "center", "right"]] = None,
+    ) -> str:
+        """Set a table's layout: column widths, repeating header rows and position on the page. Give at least one.
+
+        Args:
+            table_id: Id of the table block.
+            column_widths_in: Width of every column in inches, left to right, one per column.
+            header_rows: How many rows at the top repeat on each page the table runs onto; 0 for none.
+            alignment: Where the table sits between the margins.
+        """
+        doc.set_table_format(table_id, column_widths_in, header_rows, alignment)
+        done = []
+        if column_widths_in is not None:
+            done.append(f"{len(column_widths_in)} column width(s)")
+        if header_rows is not None:
+            done.append(f"{header_rows} header row(s)")
+        if alignment is not None:
+            done.append(f"alignment {alignment}")
+        return f"Set {', '.join(done)} on {table_id}."
 
     # ------------------------------------------------------------- revisions
 
@@ -485,9 +591,10 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
     tools = [
         get_outline, read_blocks, search_text, list_styles, read_headers_footnotes, list_revisions,
         insert_paragraphs, insert_table, insert_page_break,
-        update_paragraph, replace_text, set_table_cell, insert_table_row, move_blocks,
-        delete_table_row, delete_blocks,
-        set_paragraph_style, format_text, set_paragraph_format,
+        update_paragraph, replace_text, set_table_cell, insert_table_row, insert_table_column,
+        merge_table_cells, unmerge_table_cells, move_blocks,
+        delete_table_row, delete_table_column, delete_blocks,
+        set_paragraph_style, format_text, set_paragraph_format, format_table_cells, set_table_format,
         accept_revisions, reject_revisions,
         list_parts, read_part_xml,
     ]

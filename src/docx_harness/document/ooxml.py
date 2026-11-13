@@ -50,6 +50,17 @@ TRPR = qn("w:trPr")
 TCPR = qn("w:tcPr")
 TBLPR = qn("w:tblPr")
 TBLPREX = qn("w:tblPrEx")
+TBL_GRID = qn("w:tblGrid")
+GRID_COL = qn("w:gridCol")
+GRID_SPAN = qn("w:gridSpan")
+GRID_BEFORE = qn("w:gridBefore")
+V_MERGE = qn("w:vMerge")
+TBL_HEADER = qn("w:tblHeader")
+CELL_INS = qn("w:cellIns")
+CELL_DEL = qn("w:cellDel")
+CELL_MERGE = qn("w:cellMerge")
+SDT_CONTENT = qn("w:sdtContent")
+CUSTOM_XML = qn("w:customXml")
 RPR_CHANGE = qn("w:rPrChange")
 PPR_CHANGE = qn("w:pPrChange")
 TRPR_CHANGE = qn("w:trPrChange")
@@ -79,6 +90,20 @@ PPR_ORDER = [
     "w:textboxTightWrap", "w:outlineLvl", "w:divId", "w:cnfStyle", "w:rPr",
     "w:sectPr", "w:pPrChange",
 ]
+# Table properties. w:tcPr and w:tblPr are sequences; w:trPr is an unordered
+# group followed by the revision marks, so only its tail is listed.
+TCPR_ORDER = [
+    "w:cnfStyle", "w:tcW", "w:gridSpan", "w:hMerge", "w:vMerge", "w:tcBorders", "w:shd",
+    "w:noWrap", "w:tcMar", "w:textDirection", "w:tcFitText", "w:vAlign", "w:hideMark",
+    "w:headers", "w:cellIns", "w:cellDel", "w:cellMerge", "w:tcPrChange",
+]
+TBLPR_ORDER = [
+    "w:tblStyle", "w:tblpPr", "w:tblOverlap", "w:bidiVisual", "w:tblStyleRowBandSize",
+    "w:tblStyleColBandSize", "w:tblW", "w:jc", "w:tblCellSpacing", "w:tblInd",
+    "w:tblBorders", "w:shd", "w:tblLayout", "w:tblCellMar", "w:tblLook", "w:tblCaption",
+    "w:tblDescription", "w:tblPrChange",
+]
+TRPR_ORDER = ["w:gridBefore", "w:tblHeader", "w:ins", "w:del", "w:trPrChange"]
 # The children of w:settings (CT_Settings) that come before w:trackRevisions.
 SETTINGS_BEFORE_TRACK_REVISIONS = [
     "w:writeProtection", "w:view", "w:zoom", "w:removePersonalInformation",
@@ -109,8 +134,14 @@ def ensure_child(parent: etree._Element, tag: str, order: list[str]) -> etree._E
     existing = parent.find(qn(tag))
     if existing is not None:
         return existing
-    new = el(tag)
-    later = {qn(t) for t in order[order.index(tag) + 1:]}
+    return insert_in_order(parent, el(tag), order)
+
+
+def insert_in_order(parent: etree._Element, new: etree._Element, order: list[str]) -> etree._Element:
+    """Insert ``new`` into ``parent`` before the first child the schema
+    ``order`` puts after it."""
+    names = [qn(t) for t in order]
+    later = set(names[names.index(new.tag) + 1:])
     for index, child in enumerate(parent):
         if child.tag in later:
             parent.insert(index, new)
@@ -142,6 +173,16 @@ def get_or_add_ppr(p: etree._Element) -> etree._Element:
         ppr = el("w:pPr")
         p.insert(0, ppr)
     return ppr
+
+
+def get_or_add_props(element: etree._Element, tag: str) -> etree._Element:
+    """The property element (``w:tcPr``, ``w:trPr``, ``w:tblPr``) of a cell,
+    row or table, created in its place at the front when missing."""
+    props = element.find(qn(tag))
+    if props is None:
+        props = el(tag)
+        element.insert(1 if len(element) and element[0].tag == TBLPREX else 0, props)
+    return props
 
 
 def get_or_add_rpr(r: etree._Element) -> etree._Element:
@@ -344,6 +385,13 @@ def strip_revisions(element: etree._Element) -> None:
     for node in list(element.iter(INS, MOVE_TO)):
         if node.getparent() is not None:
             unwrap(node)
+    for mark in list(element.iter(CELL_INS, CELL_DEL)):
+        props = mark.getparent()
+        cell = props.getparent() if props is not None else None
+        if mark.tag == CELL_DEL and cell is not None and cell.getparent() is not None:
+            cell.getparent().remove(cell)
+        elif props is not None:
+            props.remove(mark)
 
 
 def unwrap(node: etree._Element) -> None:

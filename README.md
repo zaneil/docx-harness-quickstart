@@ -121,11 +121,19 @@ doc.format_text(intro, match="14%", bold=True, color="1F4E79")
 doc.set_paragraph_format(title, alignment="center")
 doc.set_cell_text(table, 1, 1, "4.5M")          # cells are also addressable as f"{table}[1,1]"
 
+doc.insert_table_column(table, cells=["Growth", "8%"])
+doc.insert_table_row(table, ["FY25 results", "", ""], index=0)
+doc.merge_cells(table, 0, 0, 0, 2)              # one heading cell across the three columns
+doc.format_cells(f"{table}[0,*]", shading="D9E2F3")          # a whole row; f"{table}[*,2]" is a column
+doc.set_table_format(table, column_widths_in=[2.5, 2, 2], header_rows=2)
+
 print(doc.outline())
 doc.save("report.docx")
 ```
 
-Block ids (`b1`, `b2`...) are assigned on load and on insert, and never shift when other blocks are added or removed. The raw package is always reachable: `doc.list_parts()`, `doc.read_part_xml("word/styles.xml")`, `doc.write_part_xml(...)`.
+Block ids (`b1`, `b2`...) are assigned on load and on insert, and never shift when other blocks are added or removed.
+
+Tables are read and addressed on their column grid, so files with merged cells behave: `[row,col]` means the same column in every row, a merged cell answers to every position it covers, and reading a table lists its `merged` cells. A newline in cell text is a paragraph break, and rewriting a cell keeps its paragraphs' formatting. A table nested inside a cell gets its own block id (listed under `nested` when you read the outer table) and is edited like any other table. The raw package is always reachable: `doc.list_parts()`, `doc.read_part_xml("word/styles.xml")`, `doc.write_part_xml(...)`.
 
 ### Layer 2: tools
 
@@ -134,10 +142,10 @@ Block ids (`b1`, `b2`...) are assigned on load and on insert, and never shift wh
 | Kind | Tools |
 | --- | --- |
 | Read | `get_outline`, `read_blocks`, `search_text`, `list_styles`, `read_headers_footnotes`, `list_revisions` |
-| Write | `insert_paragraphs`, `insert_table`, `insert_page_break`, `insert_table_row` |
-| Update | `update_paragraph`, `replace_text`, `set_table_cell`, `move_blocks` |
-| Delete | `delete_blocks`, `delete_table_row` |
-| Style | `set_paragraph_style`, `format_text`, `set_paragraph_format` |
+| Write | `insert_paragraphs`, `insert_table`, `insert_page_break`, `insert_table_row`, `insert_table_column` |
+| Update | `update_paragraph`, `replace_text`, `set_table_cell`, `merge_table_cells`, `unmerge_table_cells`, `move_blocks` |
+| Delete | `delete_blocks`, `delete_table_row`, `delete_table_column` |
+| Style | `set_paragraph_style`, `format_text`, `set_paragraph_format`, `format_table_cells`, `set_table_format` |
 | Review | `accept_revisions`, `reject_revisions` |
 | Raw package | `list_parts`, `read_part_xml`, and `write_part_xml` (only with `include_raw=True`) |
 
@@ -218,7 +226,8 @@ doc.reject_revisions(author="Review Agent")       # undo them again; or by ids=[
 doc.accept_revisions()                            # no arguments: everything that is pending
 ```
 
-- Text, paragraphs, tables and table rows are tracked as insertions and deletions; character formatting, paragraph formatting and style changes are tracked as formatting changes.
+- Text, paragraphs, tables, table rows and table columns are tracked as insertions and deletions; character formatting, paragraph formatting, style changes and table formatting (cell shading and alignment, widths, header rows) are tracked as formatting changes.
+- An inserted or deleted column is recorded cell by cell (`w:cellIns` / `w:cellDel`). Merging and unmerging cells cannot be recorded and are refused while tracking is on.
 - The agent (and `doc.text()`, the outline and block ids) always sees the document as it would read with all changes accepted.
 - Revisions already in the file from other authors are preserved. Undoing something inserted in the same session removes it rather than recording a deletion.
 - With tracking on, the agent is told to make minimal, targeted edits so the redline stays reviewable.
@@ -227,14 +236,15 @@ doc.accept_revisions()                            # no arguments: everything tha
 - A moved paragraph is recorded as a move. Word has no move markup for tables, so a moved table is a deletion plus an insertion.
 - `accept_revisions` and `reject_revisions` resolve insertions, deletions, moves and formatting changes from any author. The agent is told not to use them unless asked. The chat UI has Accept all and Reject all buttons.
 
-Not covered: edits made through `write_part_xml`; accepting or rejecting cell-level table revisions (`w:cellIns`, `w:cellDel`, `w:cellMerge`), section and table-grid changes and numbering changes, which are left in place; and pending revisions inside a paragraph you move (your own earlier edits included), which read as plain text in the moved copy. They are kept in the half left behind and come back if the move is rejected.
+Not covered: edits made through `write_part_xml`; accepting or rejecting tracked cell merges (`w:cellMerge`), section and table-grid changes and numbering changes, which are left in place (so rejecting a tracked column-width change restores the cell widths but not the `w:tblGrid` values); and pending revisions inside a paragraph you move (your own earlier edits included), which read as plain text in the moved copy. They are kept in the half left behind and come back if the move is rejected.
 
 ## Scope and limitations
 
 - Editable through the semantic tools: body paragraphs and tables, paragraph styles, character and paragraph formatting.
+- Tables: rows, columns, merged cells, nested tables, column widths, cell shading and vertical alignment, repeating header rows. Not covered: cell borders and margins, text direction, and the legacy `w:hMerge` merge markup (such cells read as separate cells).
 - Headers, footers, footnotes and endnotes: their text can be read, searched and replaced, but not restyled or restructured.
 - Preserved on round trip but not editable through the semantic tools: images, comments, content controls. They can be reached through the raw part tools.
-- Tracked output has been checked with python-docx and macOS `textutil`, not yet in Word itself. The move markup is the part most likely to need adjusting.
+- Tracked output has been checked with python-docx and macOS `textutil`, not yet in Word itself. The move markup and the tracked column markup are the parts most likely to need adjusting.
 - There is no layout engine: the agent cannot know page counts or where lines break.
 - A document without the standard style names (for example no `Heading 1`) gets a clear error listing the styles it does have; styles are not created automatically.
 - Legacy `.doc` files are not supported.

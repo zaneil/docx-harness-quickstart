@@ -6,7 +6,10 @@ when the document is loaded or the block is created. Ids live in memory only
 and never shift when other blocks are inserted or deleted.
 
 A cell of a table is addressed as ``"<table id>[row,col]"``, for example
-``"b7[0,1]"`` (zero-based).
+``"b7[0,1]"`` (zero-based). Rows and columns are positions on the table's
+grid, so a merged cell answers to every position it covers. ``"b7[0,*]"`` is
+a whole row and ``"b7[*,1]"`` a whole column. A table nested in a cell gets a
+block id of its own the first time it is read.
 """
 
 from __future__ import annotations
@@ -19,15 +22,18 @@ from pathlib import Path
 
 from lxml import etree
 
-from . import styling
+from . import styling, tables
 from .edits import EditContext
 from .ooxml import (
     AUTHOR,
     BODY,
+    CELL_DEL,
+    CELL_INS,
     DEL,
     DEL_TEXT,
     INS,
     P,
+    PPR,
     MOVE_FROM,
     MOVE_RANGE_STARTS,
     MOVE_TO,
@@ -41,7 +47,7 @@ from .ooxml import (
     SETTINGS_BEFORE_TRACK_REVISIONS,
     T,
     TBL,
-    TC,
+    TCPR,
     TR,
     TRACK_REVISIONS,
     TRPR,
@@ -54,6 +60,7 @@ from .ooxml import (
     make_run,
     paragraph_text,
     qn,
+    remove_child,
     run_text,
     strip_revisions,
 )
@@ -62,8 +69,12 @@ from .package import PackageError, WordPackage
 BLOCK_TAGS = (P, TBL, SDT)
 _TOKEN = re.compile(r"\s+|\w+|[^\w\s]")
 _REVISION_TYPES = {INS: "insert", DEL: "delete", MOVE_FROM: "move", MOVE_TO: "move",
+                   CELL_INS: "insert", CELL_DEL: "delete",
                    **{tag: "format" for tag in PROPERTY_CHANGES}}
-_REF = re.compile(r"^(b\d+)(?:\[\s*(\d+)\s*,\s*(\d+)\s*\])?$")
+_REF = re.compile(r"^(b\d+)(?:\[\s*(\d+|\*)\s*,\s*(\d+|\*)\s*\])?$")
+_VERTICAL = {"top": "top", "center": "center", "centre": "center", "middle": "center", "bottom": "bottom"}
+_TABLE_ALIGNMENTS = {"left": "left", "center": "center", "centre": "center", "right": "right"}
+_NOT_COPIED_TO_NEW_CELLS = ("w:gridSpan", "w:hMerge", "w:vMerge", "w:cellIns", "w:cellDel", "w:cellMerge", "w:tcPrChange")
 # Text outside the body: relationship kind -> the element holding each note
 # (None when the whole part is one story).
 _STORY_KINDS = {"header": None, "footer": None, "footnotes": qn("w:footnote"), "endnotes": qn("w:endnote")}
@@ -155,22 +166,46 @@ class WordDocument:
 
     def _get(self, block_id: str) -> etree._Element:
         element = self._ids.get(str(block_id).strip())
-        if element is None or element.getparent() is not self._body:
+        cell = _REF.match(str(block_id).strip())
+        if cell is not None and cell.group(2) is not None:
+            raise DocumentError(
+                f"{block_id!r} is a table cell, not a block. Set its text with set_table_cell, "
+                f"or change part of it with replace_text limited to that cell."
+            )
+        if element is None or not self._attached(element):
             raise DocumentError(
                 f"No block with id {block_id!r}. Use the outline to see current block ids."
             )
         return element
 
-    def _parse_ref(self, ref: str) -> tuple[etree._Element, tuple[int, int] | None]:
+    def _attached(self, element: etree._Element) -> bool:
+        return any(ancestor is self._body for ancestor in element.iterancestors())
+
+    def _body_block(self, block_id: str) -> etree._Element:
+        """A block of the body itself, for operations on the sequence of
+        blocks. A table nested in a cell has an id but no place in it."""
+        element = self._get(block_id)
+        if element.getparent() is not self._body:
+            raise DocumentError(
+                f"Block {block_id} is a table nested inside a cell of another table, so it cannot be moved "
+                "or used as a position. Use the id of a block from the outline instead."
+            )
+        return element
+
+    def _parse_ref(self, ref: str) -> tuple[etree._Element, tuple[int | None, int | None] | None]:
+        """A block and, for a cell reference, its (row, column); None in
+        either place stands for ``*``, every row or every column."""
         match = _REF.match(str(ref).strip())
         if not match:
             raise DocumentError(
-                f"Invalid block reference {ref!r}. Use a block id like 'b3' or a table cell like 'b3[0,1]'."
+                f"Invalid block reference {ref!r}. Use a block id like 'b3', a table cell like 'b3[0,1]', "
+                "a table row like 'b3[0,*]' or a table column like 'b3[*,1]'."
             )
         element = self._get(match.group(1))
         if match.group(2) is None:
             return element, None
-        return element, (int(match.group(2)), int(match.group(3)))
+        row, col = (None if g == "*" else int(g) for g in match.group(2, 3))
+        return element, (row, col)
 
     def _paragraphs_for(self, ref: str) -> list[etree._Element]:
         for part, kind, root in self._story_roots():
@@ -178,7 +213,7 @@ class WordDocument:
                 return self._story_paragraphs(kind, root)
         element, cell = self._parse_ref(ref)
         if cell is not None:
-            return _live_paragraphs(self._cell(element, *cell))
+            return [p for slot in self._slots(element, *cell) for p in tables.cell_paragraphs(slot.tc)]
         return _live_paragraphs(element)
 
     def _paragraph(self, block_id: str) -> etree._Element:
@@ -234,15 +269,64 @@ class WordDocument:
 
     @staticmethod
     def _cell_text(tc: etree._Element) -> str:
-        return "\n".join(paragraph_text(p) for p in _live_paragraphs(tc))
+        """A cell's text, one line per paragraph. Tables nested in the cell
+        are read through their own ids."""
+        return "\n".join(paragraph_text(p) for p in tables.cell_paragraphs(tc))
 
     @staticmethod
     def _live_rows(tbl: etree._Element) -> list[etree._Element]:
         """Rows that have not been removed by a tracked deletion."""
-        return [tr for tr in tbl.findall(TR) if not is_deleted_block(tr)]
+        return tables.live_rows(tbl)
 
-    def _rows(self, tbl: etree._Element) -> list[list[str]]:
-        return [[self._cell_text(tc) for tc in tr.findall(TC)] for tr in self._live_rows(tbl)]
+    def _rows(self, tbl: etree._Element, grid: tables.Grid | None = None) -> list[list[str]]:
+        """The table's text on its grid: every row has one entry per column,
+        and a position covered by a merged cell (other than its top-left) is ""."""
+        grid = grid or tables.build_grid(tbl)
+        texts = {slot: self._cell_text(slot.tc) for slot in grid.slots()}
+        out = []
+        for r, row in enumerate(grid.positions):
+            cells = [""] * grid.width
+            for c, position in row.items():
+                if (position.slot.row, position.slot.col) == (r, c):
+                    cells[c] = texts[position.slot]
+            out.append(cells)
+        return out
+
+    def _describe_table(self, tbl: etree._Element, include_formatting: bool) -> dict:
+        block_id = self._id_of(tbl)
+        grid = tables.build_grid(tbl)
+        info: dict = {"rows": self._rows(tbl, grid)}
+        merged, nested, cells = [], [], []
+        for slot in grid.slots():
+            ref = f"{block_id}[{slot.row},{slot.col}]"
+            if slot.merged:
+                merged.append({"cell": ref, "rows": slot.rowspan, "cols": slot.colspan})
+            inner = tables.nested_tables(slot.tc)
+            if inner:
+                nested.append({"cell": ref, "tables": [self._id_of(t) for t in inner]})
+            look = tables.cell_format(slot.tc) if include_formatting else {}
+            if look:
+                cells.append({"cell": ref, **look})
+        if merged:
+            info["merged"] = merged
+        if nested:
+            info["nested"] = nested
+        if include_formatting:
+            layout: dict = {}
+            widths = tables.grid_widths(tbl)
+            columns = [grid.physical_of(c) for c in range(grid.width)]
+            if columns and all(c is not None and c < len(widths) and widths[c] for c in columns):
+                layout["column_widths_in"] = [round(widths[c] / tables.TWIPS_PER_INCH, 2) for c in columns]
+            header_rows = next((i for i, tr in enumerate(grid.rows) if not tables.is_header_row(tr)), len(grid.rows))
+            if header_rows:
+                layout["header_rows"] = header_rows
+            if tables.table_alignment(tbl):
+                layout["alignment"] = tables.table_alignment(tbl)
+            if cells:
+                layout["cells"] = cells
+            if layout:
+                info["format"] = layout
+        return info
 
     def _describe(self, element: etree._Element, include_formatting: bool = False, resolve_styles: bool = False) -> dict:
         info: dict = {"id": self._id_of(element), "type": self._type(element)}
@@ -261,7 +345,7 @@ class WordDocument:
                     for r in iter_runs(element) if run_text(r)
                 ]
         elif element.tag == TBL:
-            info["rows"] = self._rows(element)
+            info.update(self._describe_table(element, include_formatting))
         else:
             info["text"] = "\n".join(paragraph_text(p) for p in _live_paragraphs(element))
         return info
@@ -289,7 +373,7 @@ class WordDocument:
 
     def _slice(self, start: str | None, count: int) -> list[etree._Element]:
         elements = self._block_elements()
-        index = elements.index(self._get(start)) if start else 0
+        index = elements.index(self._body_block(start)) if start else 0
         return elements[index:index + max(count, 0)]
 
     def read(self, start: str | None = None, count: int = 20, include_formatting: bool = False,
@@ -299,8 +383,17 @@ class WordDocument:
         ``include_formatting`` adds each paragraph's direct formatting:
         ``format`` (alignment, spacing, indents; left out when there is none)
         and ``runs``. ``resolve_styles`` also adds ``style_format``, what the
-        paragraph's style supplies underneath, for rendering a preview."""
+        paragraph's style supplies underneath, for rendering a preview.
+
+        A table returns ``rows`` (its text on the column grid), ``merged``
+        (cells covering more than one position) and ``nested`` (ids of tables
+        inside its cells) when it has any, and with ``include_formatting`` a
+        ``format`` with column widths, header rows, alignment and cell shading.
+        ``start`` may also be the id of a nested table, which is then read alone."""
         elements = self._block_elements()
+        if start and self._get(start).getparent() is not self._body:
+            return {"blocks": [self._describe(self._get(start), include_formatting, resolve_styles)][:max(count, 0)],
+                    "next": None, "total_blocks": len(elements)}
         index = elements.index(self._get(start)) if start else 0
         chunk = elements[index:index + max(count, 0)]
         following = elements[index + len(chunk):index + len(chunk) + 1]
@@ -329,14 +422,18 @@ class WordDocument:
                 lo, hi = max(first.start() - 40, 0), min(first.end() + 40, len(text))
                 hits.append({"ref": ref, "matches": len(matches), "snippet": text[lo:hi].replace("\n", " ")})
 
+        def scan(tbl: etree._Element) -> None:
+            block_id = self._id_of(tbl)
+            for slot in tables.build_grid(tbl).slots():
+                check(f"{block_id}[{slot.row},{slot.col}]", self._cell_text(slot.tc))
+                for inner in tables.nested_tables(slot.tc):
+                    scan(inner)
+
         for element in self._block_elements():
-            block_id = self._id_of(element)
             if element.tag == TBL:
-                for r, row in enumerate(self._rows(element)):
-                    for c, cell in enumerate(row):
-                        check(f"{block_id}[{r},{c}]", cell)
+                scan(element)
             else:
-                check(block_id, "\n".join(paragraph_text(p) for p in _live_paragraphs(element)))
+                check(self._id_of(element), "\n".join(paragraph_text(p) for p in _live_paragraphs(element)))
         for story in self.stories():
             check(story["part"], "\n".join(story["paragraphs"]))
         return hits
@@ -351,7 +448,7 @@ class WordDocument:
             return len(self._body) - 1 if last is not None and last.tag == SECTPR else len(self._body)
         if after == "start":
             return 0
-        return self._body.index(self._get(after)) + 1
+        return self._body.index(self._body_block(after)) + 1
 
     def _insert(self, new: etree._Element, after: str) -> str:
         self.edits.insert_block(self._body, self._index_after(after), new)
@@ -361,7 +458,7 @@ class WordDocument:
         """Move a block to after block ``after`` ("start", "end" or a block
         id). The block keeps its id. When changes are tracked, a paragraph is
         recorded as a move and a table as a deletion plus an insertion."""
-        element = self._get(block_id)
+        element = self._body_block(block_id)
         moved = self.edits.move_block(element, self._body, self._index_after(after))
         if moved is not element:  # tracked: the id follows the content to its new place
             block_id = self._by_element.pop(element)
@@ -388,15 +485,20 @@ class WordDocument:
         after: str = "end",
         style: str | None = "Table Grid",
         header: bool = True,
+        column_widths_in: list[float] | None = None,
     ) -> str:
-        """Insert a table. ``rows`` is a list of rows, each a list of cell texts.
-        When ``header`` is true the first row is bold."""
+        """Insert a table. ``rows`` is a list of rows, each a list of cell
+        texts; a newline in a cell's text starts a new paragraph. When
+        ``header`` is true the first row is bold and repeats at the top of
+        each page. ``column_widths_in`` fixes the column widths (inches);
+        otherwise the columns share the page width."""
         if not rows or not all(isinstance(r, (list, tuple)) for r in rows):
             raise DocumentError("rows must be a non-empty list of lists of cell text")
         cols = max(len(r) for r in rows)
         if cols == 0:
             raise DocumentError("rows must contain at least one cell")
-        width = PAGE_WIDTH_TWIPS // cols
+        fixed = column_widths_in is not None
+        widths = self._twips(column_widths_in, cols) if fixed else [PAGE_WIDTH_TWIPS // cols] * cols
 
         tbl_pr = el("w:tblPr")
         style_id = None
@@ -407,31 +509,50 @@ class WordDocument:
                 style_id = None
         if style_id:
             tbl_pr.append(el("w:tblStyle", {"w:val": style_id}))
-        tbl_pr.append(el("w:tblW", {"w:w": "5000", "w:type": "pct"}))
+        tbl_pr.append(el("w:tblW", {"w:w": str(sum(widths)), "w:type": "dxa"} if fixed else {"w:w": "5000", "w:type": "pct"}))
         if not style_id:
             # No usable table style in this document: draw explicit borders.
             borders = el("w:tblBorders")
             for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
                 borders.append(el(f"w:{side}", {"w:val": "single", "w:sz": "4", "w:space": "0", "w:color": "auto"}))
             tbl_pr.append(borders)
+        if fixed:
+            tbl_pr.append(el("w:tblLayout", {"w:type": "fixed"}))
         tbl_pr.append(el("w:tblLook", {"w:val": "04A0"}))
 
         tbl = el("w:tbl", None, tbl_pr)
         grid = el("w:tblGrid")
-        for _ in range(cols):
+        for width in widths:
             grid.append(el("w:gridCol", {"w:w": str(width)}))
         tbl.append(grid)
         for r_index, row in enumerate(rows):
             tr = el("w:tr")
+            if header and r_index == 0:
+                tr.append(el("w:trPr", None, el("w:tblHeader")))
             for c_index in range(cols):
                 text = str(row[c_index]) if c_index < len(row) and row[c_index] is not None else ""
-                p = make_paragraph(text)
-                if header and r_index == 0:
-                    for run in p.iter(R):
-                        styling.apply_run_format(run, bold=True)
-                tr.append(el("w:tc", None, el("w:tcPr", None, el("w:tcW", {"w:w": str(width), "w:type": "dxa"})), p))
+                tc = el("w:tc", None, el("w:tcPr", None, el("w:tcW", {"w:w": str(widths[c_index]), "w:type": "dxa"})))
+                for line in _lines(text):
+                    p = make_paragraph(line)
+                    if header and r_index == 0:
+                        for run in p.iter(R):
+                            styling.apply_run_format(run, bold=True)
+                    tc.append(p)
+                tr.append(tc)
             tbl.append(tr)
         return self._insert(tbl, after)
+
+    @staticmethod
+    def _twips(widths_in: list[float], columns: int) -> list[int]:
+        if isinstance(widths_in, (str, int, float)) or len(widths_in) != columns:
+            raise DocumentError(f"Give one width in inches per column: the table has {columns} columns.")
+        try:
+            twips = [round(float(w) * tables.TWIPS_PER_INCH) for w in widths_in]
+        except (TypeError, ValueError):
+            raise DocumentError("Column widths must be numbers, in inches.") from None
+        if any(w <= 0 for w in twips):
+            raise DocumentError("Column widths must be greater than zero.")
+        return twips
 
     # ---------------------------------------------------------------- update
 
@@ -529,34 +650,123 @@ class WordDocument:
 
     # ---------------------------------------------------------------- tables
 
-    def _cell(self, tbl: etree._Element, row: int, col: int) -> etree._Element:
+    @staticmethod
+    def _grid(tbl: etree._Element) -> tables.Grid:
         if tbl.tag != TBL:
             raise DocumentError("Cell references like 'b3[0,1]' only apply to tables.")
-        rows = self._live_rows(tbl)
-        if not 0 <= row < len(rows):
-            raise DocumentError(f"Row {row} is out of range; the table has {len(rows)} rows (zero-based).")
-        cells = rows[row].findall(TC)
-        if not 0 <= col < len(cells):
-            raise DocumentError(f"Column {col} is out of range; row {row} has {len(cells)} cells (zero-based).")
-        return cells[col]
+        return tables.build_grid(tbl)
+
+    @staticmethod
+    def _position(grid: tables.Grid, row: int, col: int) -> tables.Position:
+        if not 0 <= row < len(grid.rows):
+            raise DocumentError(f"Row {row} is out of range; the table has {len(grid.rows)} rows (zero-based).")
+        position = grid.at(row, col)
+        if position is None:
+            raise DocumentError(
+                f"Column {col} is out of range; row {row} has {grid.row_extent(row)} columns (zero-based)."
+            )
+        return position
+
+    def _cell(self, tbl: etree._Element, row: int, col: int) -> etree._Element:
+        """The cell at a grid position: for a position covered by a merged
+        cell, the merged cell's top-left ``w:tc``, which holds its content."""
+        return self._position(self._grid(tbl), row, col).slot.tc
+
+    def _slots(self, tbl: etree._Element, row: int | None, col: int | None) -> list[tables.Slot]:
+        """The cells a reference selects; None is ``*``."""
+        grid = self._grid(tbl)
+        if row is not None and col is not None:
+            return [self._position(grid, row, col).slot]
+        if row is not None and not 0 <= row < len(grid.rows):
+            raise DocumentError(f"Row {row} is out of range; the table has {len(grid.rows)} rows (zero-based).")
+        if col is not None and not 0 <= col < grid.width:
+            raise DocumentError(f"Column {col} is out of range; the table has {grid.width} columns (zero-based).")
+        return [
+            slot for slot in grid.slots()
+            if (row is None or slot.row <= row < slot.row + slot.rowspan)
+            and (col is None or slot.col <= col < slot.col + slot.colspan)
+        ]
+
+    @staticmethod
+    def _paragraph_like(source: etree._Element | None, text: str = "") -> etree._Element:
+        """A new paragraph with the properties of ``source`` and the
+        character formatting of its first run."""
+        if source is None:
+            return make_paragraph(text)
+        new = el("w:p")
+        if source.find(PPR) is not None:
+            new.append(copy.deepcopy(source.find(PPR)))
+            strip_revisions(new)  # no revision marks or formatting history on the copy
+        if text:
+            new.append(make_run(text, next((r.find(RPR) for r in iter_runs(source) if r.find(RPR) is not None), None)))
+        return new
 
     def _set_cell(self, tc: etree._Element, text: str) -> None:
-        paragraphs = [p for p in tc.findall(P) if not is_deleted_block(p)]
+        """Set a cell's text, one paragraph per line. Lines map onto the
+        paragraphs the cell already has, which keep their style and
+        formatting; nested tables in the cell are left as they are."""
+        lines = _lines(text)
+        paragraphs = tables.cell_paragraphs(tc)
         if not paragraphs:
             paragraphs = [make_paragraph()]
             self.edits.insert_block(tc, len(tc), paragraphs[0])
-        self._set_paragraph_text(paragraphs[0], text)
-        for extra in paragraphs[1:]:
-            self.edits.delete_block(extra)
+        for p, line in zip(paragraphs, lines):
+            self._set_paragraph_text(p, line)
+        anchor = paragraphs[-1]
+        for line in lines[len(paragraphs):]:
+            new = self._paragraph_like(anchor, line)
+            parent = anchor.getparent()
+            self.edits.insert_block(parent, parent.index(anchor) + 1, new)
+            anchor = new
+        for extra in paragraphs[len(lines):]:
+            previous = extra.getprevious()
+            if extra.getnext() is None and (previous is None or previous.tag != P):
+                self._set_paragraph_text(extra, "")  # a cell has to end with a paragraph
+            else:
+                self.edits.delete_block(extra)
+
+    def _new_cell(self, like: etree._Element, text: str = "", width: int | None = None) -> etree._Element:
+        """A detached, unmerged cell that looks like ``like``."""
+        tc = el("w:tc")
+        if like.find(TCPR) is not None:
+            tcpr = copy.deepcopy(like.find(TCPR))
+            for tag in _NOT_COPIED_TO_NEW_CELLS:
+                remove_child(tcpr, tag)
+            tc.append(tcpr)
+        if width:
+            tables.set_cell_width(tc, width)
+        source = next(iter(tables.cell_paragraphs(like)), None)
+        for line in _lines(text):
+            tc.append(self._paragraph_like(source, line))
+        return tc
+
+    def _sync_cell_widths(self, tbl: etree._Element) -> None:
+        """Make cell widths (and a fixed table width) agree with the grid."""
+        for tr in tbl.iter(TR):
+            if next(a for a in tr.iterancestors() if a.tag == TBL) is not tbl:
+                continue  # a row of a nested table
+            for tc in tables.row_cells(tr, include_deleted=True):
+                width = tables.width_from_grid(tbl, tc)
+                if width:
+                    tables.set_cell_width(tc, width)
+        current = tables.table_width(tbl)
+        if current is not None and current[1] == "dxa" and current[0] > 0:
+            tables.set_table_width(tbl, sum(tables.grid_widths(tbl)))
 
     def set_cell_text(self, table_id: str, row: int, col: int, text: str) -> None:
+        """Set the text of the cell at grid position (row, col). Each line of
+        ``text`` is a paragraph. A position inside a merged cell sets the
+        merged cell."""
         self._set_cell(self._cell(self._table(table_id), row, col), text)
 
     def insert_table_row(self, table_id: str, cells: list[str], index: int | None = None) -> int:
         """Insert a row at ``index`` (default: append). The new row copies the
-        layout of a neighbouring row. Returns the index of the new row."""
+        layout of a neighbouring row. ``cells`` fills the row's own cells left
+        to right; a cell merged with the rows above and below is skipped.
+        Returns the index of the new row."""
         tbl = self._table(table_id)
-        rows = self._live_rows(tbl)
+        grid = tables.build_grid(tbl)
+        rows = grid.rows
         if not rows:
             raise DocumentError("Table has no rows to copy the layout from.")
         if index is None:
@@ -568,27 +778,327 @@ class WordDocument:
         source = rows[0] if len(rows) == 1 else rows[max(index - 1, 1)] if index > 0 else rows[0]
         new_row = copy.deepcopy(source)
         strip_revisions(new_row)  # the copy starts clean; it is tracked as one inserted row
-        new_cells = new_row.findall(TC)
-        if len(cells) > len(new_cells):
-            raise DocumentError(f"Got {len(cells)} cells but the table has {len(new_cells)} columns.")
+        # Header rows stay one block at the top of the table.
+        if new_row.find(TRPR) is not None and not (index < len(rows) and tables.is_header_row(rows[index])):
+            remove_child(new_row.find(TRPR), "w:tblHeader")
+        own: list[etree._Element] = []
+        col = tables.grid_before(new_row)
         with self.edits.untracked():
-            for i, tc in enumerate(new_cells):
-                self._set_cell(tc, str(cells[i]) if i < len(cells) else "")
+            for tc in tables.row_cells(new_row):
+                for inner in tables.nested_tables(tc):
+                    self.edits.delete_block(inner)  # a new row does not repeat a nested table
+                above, below = grid.at(index - 1, col), grid.at(index, col)
+                inside = above is not None and below is not None and above.slot is below.slot
+                if tables.v_merge(tc) or inside:
+                    # Part of a vertical merge only when the row lands inside one.
+                    tables.set_v_merge(tc, "continue" if inside else None)
+                if inside:
+                    self._set_cell(tc, "")
+                else:
+                    own.append(tc)
+                col += tables.span(tc)
+            if len(cells) > len(own):
+                raise DocumentError(f"Got {len(cells)} cells but the new row has {len(own)} cells.")
+            for i, tc in enumerate(own):
+                self._set_cell(tc, str(cells[i]) if i < len(cells) and cells[i] is not None else "")
         if index == len(rows):
-            anchor = rows[-1]
-            self.edits.insert_block(tbl, tbl.index(anchor) + 1, new_row)
+            parent = rows[-1].getparent()
+            self.edits.insert_block(parent, parent.index(rows[-1]) + 1, new_row)
         else:
-            self.edits.insert_block(tbl, tbl.index(rows[index]), new_row)
+            parent = rows[index].getparent()
+            self.edits.insert_block(parent, parent.index(rows[index]), new_row)
         return index
 
     def delete_table_row(self, table_id: str, row: int) -> None:
+        """Delete a row. A cell merged down from this row keeps its content:
+        the merge then starts in the row below."""
         tbl = self._table(table_id)
-        rows = self._live_rows(tbl)
+        grid = tables.build_grid(tbl)
+        rows = grid.rows
         if not 0 <= row < len(rows):
             raise DocumentError(f"Row {row} is out of range; the table has {len(rows)} rows (zero-based).")
         if len(rows) == 1:
             raise DocumentError("Cannot delete the only row; delete the table block instead.")
+        for col, position in sorted(grid.positions[row].items()):
+            slot = position.slot
+            if (slot.row, slot.col) != (row, col) or slot.rowspan == 1:
+                continue
+            heir = grid.at(row + 1, col).own
+            self.edits.before_cell_format(heir)
+            tables.set_v_merge(heir, "restart" if slot.rowspan > 2 else None)
+            old = [child for child in heir if child.tag != TCPR]
+            for child in slot.tc:
+                if child.tag != TCPR and not is_deleted_block(child):
+                    clone = copy.deepcopy(child)
+                    strip_revisions(clone)
+                    self.edits.insert_block(heir, len(heir), clone)
+            for child in old:
+                self.edits.delete_block(child)
         self.edits.delete_block(rows[row])
+
+    def insert_table_column(
+        self,
+        table_id: str,
+        index: int | None = None,
+        cells: list[str] | None = None,
+        width_in: float | None = None,
+    ) -> int:
+        """Insert a column at grid position ``index`` (default: after the
+        last). ``cells`` gives its text top to bottom, one entry per row. The
+        new cells copy the look of the column beside them, and a merged cell
+        that spans the position grows by one column instead. Without
+        ``width_in`` the columns are rescaled so the table keeps its width
+        (when changes are tracked, the other columns are left as they are).
+        Returns the index of the new column."""
+        tbl = self._table(table_id)
+        grid = tables.build_grid(tbl)
+        if not grid.rows or not grid.width:
+            raise DocumentError("Table has no cells to copy the layout from.")
+        if index is None:
+            index = grid.width
+        if not 0 <= index <= grid.width:
+            raise DocumentError(f"index must be between 0 and {grid.width}.")
+        cells = list(cells or [])
+        if len(cells) > len(grid.rows):
+            raise DocumentError(f"Got {len(cells)} cells but the table has {len(grid.rows)} rows. Give one text per row.")
+        widths = tables.grid_widths(tbl)
+        total = sum(widths)
+        physical = grid.physical_of(index)
+        if physical is None:
+            physical = (grid.physical_of(index - 1) or 0) + 1
+        beside = grid.physical_of(index - 1 if index > 0 else 0)
+        if width_in is not None:
+            new_width = self._twips([width_in], 1)[0]
+        else:
+            new_width = (widths[beside] if beside is not None and beside < len(widths) else 0) or PAGE_WIDTH_TWIPS // (grid.width + 1)
+
+        widened = []
+        for r, tr in enumerate(grid.rows):
+            here, left = grid.at(r, index), grid.at(r, index - 1)
+            if here is not None and here.slot.col < index:
+                # A merged cell straddles the new column: it grows by one.
+                self.edits.before_cell_format(here.own)
+                tables.set_span(here.own, tables.span(here.own) + 1)
+                widened.append(here.own)
+                continue
+            if here is None and left is None:
+                if index <= tables.grid_before(tr):  # the row starts further right
+                    self.edits.before_row_format(tr)
+                    tables.set_grid_before(tr, tables.grid_before(tr) + 1)
+                continue
+            text = str(cells[r]) if r < len(cells) and cells[r] is not None else ""
+            new = self._new_cell((left or here).own, text, new_width)
+            if here is not None:
+                parent = here.own.getparent()
+                self.edits.insert_cell(parent, parent.index(here.own), new)
+            else:
+                parent = left.own.getparent()
+                self.edits.insert_cell(parent, parent.index(left.own) + 1, new)
+        tables.insert_grid_col(tbl, physical, new_width)
+        if self.edits.tracking:
+            for tc in widened:
+                width = tables.width_from_grid(tbl, tc)
+                if width:
+                    tables.set_cell_width(tc, width)
+        else:
+            if width_in is None:
+                tables.scale_grid(tbl, total)
+            self._sync_cell_widths(tbl)
+        return index
+
+    def delete_table_column(self, table_id: str, col: int) -> None:
+        """Delete the column at grid position ``col``. A merged cell that
+        spans it loses one column and keeps its content."""
+        tbl = self._table(table_id)
+        grid = tables.build_grid(tbl)
+        if not 0 <= col < grid.width:
+            raise DocumentError(f"Column {col} is out of range; the table has {grid.width} columns (zero-based).")
+        if grid.width == 1:
+            raise DocumentError("Cannot delete the only column; delete the table block instead.")
+        widths = tables.grid_widths(tbl)
+        total = sum(widths)
+        physical = grid.physical_of(col)
+        gone = widths[physical] if physical is not None and physical < len(widths) else 0
+        for r, tr in enumerate(grid.rows):
+            here = grid.at(r, col)
+            if here is None:
+                if col < tables.grid_before(tr):
+                    self.edits.before_row_format(tr)
+                    tables.set_grid_before(tr, tables.grid_before(tr) - 1)
+                continue
+            own = here.own
+            if tables.span(own) > 1:
+                self.edits.before_cell_format(own)
+                tables.set_span(own, tables.span(own) - 1)
+                current = tables.cell_width(own)
+                if self.edits.tracking and gone and current is not None and current[0] > gone:
+                    tables.set_cell_width(own, current[0] - gone)
+            else:
+                self.edits.delete_cell(own)
+                if not tables.row_cells(tr, include_deleted=True):
+                    self.edits.delete_block(tr)  # a row cannot be left without cells
+        if not self.edits.tracking:
+            # A tracked deletion keeps its cells, and so its grid column, until accepted.
+            if physical is not None:
+                tables.remove_grid_col(tbl, physical)
+            tables.scale_grid(tbl, total)
+            self._sync_cell_widths(tbl)
+
+    def _no_tracked_merge(self) -> None:
+        if self.edits.tracking:
+            raise DocumentError(
+                "Merging and unmerging cells cannot be recorded as a tracked change, so nothing was changed. "
+                "Leave the cells as they are and tell the user this edit needs track changes switched off."
+            )
+
+    def merge_cells(self, table_id: str, row: int, col: int, end_row: int, end_col: int) -> None:
+        """Merge the rectangle of cells from (row, col) to (end_row, end_col),
+        both included, into one cell. The text of all of them is kept, in
+        reading order. Not available while changes are tracked."""
+        tbl = self._table(table_id)
+        self._no_tracked_merge()
+        grid = tables.build_grid(tbl)
+        (r0, r1), (c0, c1) = sorted((row, end_row)), sorted((col, end_col))
+        slots: list[tables.Slot] = []
+        for r in range(r0, r1 + 1):
+            for c in range(c0, c1 + 1):
+                slot = self._position(grid, r, c).slot
+                if (slot.row < r0 or slot.col < c0
+                        or slot.row + slot.rowspan - 1 > r1 or slot.col + slot.colspan - 1 > c1):
+                    raise DocumentError(
+                        f"The range cuts through the merged cell at [{slot.row},{slot.col}], which covers "
+                        f"{slot.rowspan} row(s) and {slot.colspan} column(s). Widen the range to take in all "
+                        "of it, or unmerge it first. Nothing was changed."
+                    )
+                if slot not in slots:
+                    slots.append(slot)
+        if len(slots) == 1:
+            raise DocumentError("That range is one cell already; give two different corners to merge.")
+
+        def has_content(tc: etree._Element) -> bool:
+            return bool(self._cell_text(tc).strip()) or bool(tables.nested_tables(tc))
+
+        anchor = slots[0].tc
+        incoming = [slot.tc for slot in slots[1:] if has_content(slot.tc)]
+        if incoming and not has_content(anchor):
+            for child in [c for c in anchor if c.tag != TCPR]:
+                self.edits.delete_block(child)
+        for tc in incoming:
+            for child in [c for c in tc if c.tag != TCPR]:
+                self.edits.move_block(child, anchor, len(anchor))
+        for r in range(r0, r1 + 1):
+            owns: list[etree._Element] = []
+            for c in range(c0, c1 + 1):
+                own = grid.at(r, c).own
+                if own not in owns:
+                    owns.append(own)
+            keep = owns[0]
+            for extra in owns[1:]:
+                self.edits.delete_cell(extra)
+            tables.set_span(keep, c1 - c0 + 1)
+            tables.set_v_merge(keep, None if r0 == r1 else "restart" if r == r0 else "continue")
+            width = tables.width_from_grid(tbl, keep)
+            if width:
+                tables.set_cell_width(keep, width)
+            if r > r0:  # the cells under the first hold nothing
+                for child in [c for c in keep if c.tag != TCPR]:
+                    self.edits.delete_block(child)
+                self.edits.insert_block(keep, len(keep), make_paragraph())
+        if len(anchor) == 0 or anchor[-1].tag != P:
+            self.edits.insert_block(anchor, len(anchor), make_paragraph())  # a cell has to end with a paragraph
+
+    def unmerge_cells(self, table_id: str, row: int, col: int) -> None:
+        """Split the merged cell covering (row, col) back into single cells.
+        Its content stays in the top-left one. Not available while changes
+        are tracked."""
+        tbl = self._table(table_id)
+        self._no_tracked_merge()
+        slot = self._position(tables.build_grid(tbl), row, col).slot
+        if not slot.merged:
+            raise DocumentError(f"The cell at [{row},{col}] is not merged; there is nothing to split.")
+        widths = tables.grid_widths(tbl)
+        for own in slot.members:
+            start = tables.physical_col(own)
+            tables.set_v_merge(own, None)
+            tables.set_span(own, 1)
+            if start < len(widths) and widths[start]:
+                tables.set_cell_width(own, widths[start])
+            parent = own.getparent()
+            for offset in range(1, slot.colspan):
+                width = widths[start + offset] if start + offset < len(widths) else None
+                self.edits.insert_cell(parent, parent.index(own) + offset, self._new_cell(own, "", width))
+
+    def format_cells(self, ref: str, shading: str | None = None, vertical_align: str | None = None) -> int:
+        """Format table cells. ``ref`` is a cell (``b3[0,1]``), a row
+        (``b3[0,*]``), a column (``b3[*,1]``) or a table id for every cell.
+        ``shading`` is a background color (hex or a basic color name, "none"
+        to clear); ``vertical_align`` is top, center or bottom. Returns the
+        number of cells formatted. For the text itself use ``format_text``
+        and ``set_paragraph_format`` with the same ``ref``."""
+        if shading is None and vertical_align is None:
+            raise DocumentError("Give at least one cell property (shading, vertical_align).")
+        element, cell = self._parse_ref(ref)
+        if element.tag != TBL:
+            raise DocumentError(f"{ref} is a {self._type(element)}; cell formatting needs a table or a table cell.")
+        fill = None
+        if shading is not None:
+            fill = "" if str(shading).strip().lower() in ("", "none", "clear", "auto") else styling.normalize_color(shading)
+        align = None
+        if vertical_align is not None:
+            align = _VERTICAL.get(str(vertical_align).strip().lower())
+            if align is None:
+                raise DocumentError(f"Invalid vertical_align {vertical_align!r}. Use 'top', 'center' or 'bottom'.")
+        slots = self._slots(element, *(cell or (None, None)))
+        for slot in slots:
+            for tc in slot.members:
+                self.edits.before_cell_format(tc)
+                tables.apply_cell_format(tc, fill, align)
+        return len(slots)
+
+    def set_table_format(
+        self,
+        table_id: str,
+        column_widths_in: list[float] | None = None,
+        header_rows: int | None = None,
+        alignment: str | None = None,
+    ) -> None:
+        """Lay out a table. ``column_widths_in`` sets every column's width in
+        inches and fixes the layout so Word keeps them; ``header_rows`` is how
+        many rows at the top repeat on each page the table runs onto (0 for
+        none); ``alignment`` places the table left, center or right."""
+        tbl = self._table(table_id)
+        if column_widths_in is None and header_rows is None and alignment is None:
+            raise DocumentError("Give at least one table property (column_widths_in, header_rows, alignment).")
+        grid = tables.build_grid(tbl)
+        if alignment is not None and str(alignment).strip().lower() not in _TABLE_ALIGNMENTS:
+            raise DocumentError(f"Invalid alignment {alignment!r}. Use 'left', 'center' or 'right'.")
+        if header_rows is not None and not 0 <= int(header_rows) <= len(grid.rows):
+            raise DocumentError(f"header_rows must be between 0 and {len(grid.rows)}, the number of rows.")
+        twips = self._twips(column_widths_in, grid.width) if column_widths_in is not None else None
+
+        if twips is not None or alignment is not None:
+            self.edits.before_table_format(tbl)
+        if twips is not None:
+            widths = tables.grid_widths(tbl)
+            for col, width in enumerate(twips):
+                physical = grid.physical_of(col)
+                widths.extend([0] * (physical + 1 - len(widths)))
+                widths[physical] = width
+            tables.set_grid_widths(tbl, widths)
+            for tr in grid.rows:
+                for tc in tables.row_cells(tr):
+                    width = tables.width_from_grid(tbl, tc)
+                    if width and tables.cell_width(tc) != (width, "dxa"):
+                        self.edits.before_cell_format(tc)
+                        tables.set_cell_width(tc, width, create=True)
+            tables.set_table_width(tbl, sum(twips), fixed=True)
+        if alignment is not None:
+            tables.set_table_alignment(tbl, _TABLE_ALIGNMENTS[str(alignment).strip().lower()])
+        if header_rows is not None:
+            for index, tr in enumerate(grid.rows):
+                if tables.is_header_row(tr) != (index < int(header_rows)):
+                    self.edits.before_row_format(tr)
+                    tables.set_header_row(tr, index < int(header_rows))
 
     # ---------------------------------------------------------------- delete
 
@@ -683,6 +1193,8 @@ class WordDocument:
                 entry["text"] = paragraph_text(parent.getparent())
             elif node.tag == RPR_CHANGE:
                 entry["text"] = run_text(parent.getparent())
+            elif node.tag in (CELL_INS, CELL_DEL):
+                entry["target"] = "table cell"
             elif node.tag in PROPERTY_CHANGES:
                 entry["target"] = "table format"
             elif parent.tag == TRPR:
@@ -730,7 +1242,7 @@ class WordDocument:
             node for part, node in self._revision_nodes()
             if (wanted is None or node.get(qn("w:id")) in wanted)
             and (author is None or node.get(AUTHOR) == author)
-            and (scope is None or (part is None and self._top(node) is scope))
+            and (scope is None or (part is None and any(a is scope for a in node.iterancestors())))
         ]
         roots = [self._body] + [root for _, _, root in self._story_roots()]
         # The two halves of a move are resolved together.
@@ -749,14 +1261,28 @@ class WordDocument:
                     "List the revisions again to see current ids."
                 )
 
-        def is_mark(node: etree._Element) -> bool:  # on a paragraph mark or a table row
-            return node.tag not in PROPERTY_CHANGES and node.getparent().tag in (RPR, TRPR)
+        def is_mark(node: etree._Element) -> bool:  # on a paragraph mark, a table row or a cell
+            return node.tag not in PROPERTY_CHANGES and node.getparent().tag in (RPR, TRPR, TCPR)
 
-        # Text first, then paragraph marks and rows: a paragraph whose inserted
-        # text was rejected is empty by the time its mark is, and goes entirely.
+        # A cell that goes (a rejected insertion, an accepted deletion) takes
+        # its grid column with it once no row has a cell there any more.
+        emptied: dict[etree._Element, set[int]] = {}
+        for node in nodes:
+            if node.tag == (CELL_DEL if accept else CELL_INS):
+                cell = node.getparent().getparent()
+                table = next(a for a in cell.iterancestors() if a.tag == TBL)
+                emptied.setdefault(table, set()).add(tables.physical_col(cell))
+
+        # Text first, then paragraph marks, rows and cells: a paragraph whose
+        # inserted text was rejected is empty by the time its mark is, and
+        # goes entirely.
         for node in sorted(nodes, key=is_mark):
             if any(ancestor is root for ancestor in node.iterancestors() for root in roots):
                 self.edits.resolve(node, accept)
+        for table, columns in emptied.items():
+            spare = len(tables.grid_cols(table)) - tables.physical_width(table)
+            for column in sorted(columns, reverse=True)[:max(spare, 0)]:
+                tables.remove_grid_col(table, column)
         for root in roots:
             if next(root.iter(MOVE_FROM, MOVE_TO), None) is None:
                 self.edits.remove_move_ranges(root)  # no moves left: no stray range markers either
@@ -773,7 +1299,7 @@ class WordDocument:
 
     def _sync_ids(self) -> None:
         """Forget blocks that left the body and give ids to blocks that came back."""
-        for element in [e for e in self._by_element if e.getparent() is not self._body]:
+        for element in [e for e in self._by_element if not self._attached(e)]:
             self._ids.pop(self._by_element.pop(element), None)
         for element in self._block_elements():
             self._id_of(element)
@@ -797,6 +1323,11 @@ class WordDocument:
 def _live_paragraphs(element: etree._Element) -> list[etree._Element]:
     """Paragraphs in ``element`` (itself included) not removed by a tracked deletion."""
     return [p for p in element.iter(P) if not is_deleted_block(p)]
+
+
+def _lines(text: str) -> list[str]:
+    """Cell text as paragraphs: one per line."""
+    return str(text).replace("\r\n", "\n").replace("\r", "\n").split("\n")
 
 
 def make_run_text(text: str) -> str:
