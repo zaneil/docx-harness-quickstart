@@ -243,10 +243,22 @@ function render(state) {
     let el;
     if (block.type === "table") {
       el = document.createElement("table");
-      for (const row of block.rows) {
-        const tr = el.insertRow();
-        for (const cell of row) tr.insertCell().textContent = cell;
+      // A merged cell is drawn once, at its top-left position; the positions it covers are skipped.
+      const spans = {}, covered = new Set();
+      for (const m of block.merged || []) {
+        const [r, c] = m.cell.slice(m.cell.indexOf("[") + 1, -1).split(",").map(Number);
+        spans[r + "," + c] = m;
+        for (let i = r; i < r + m.rows; i++) for (let j = c; j < c + m.cols; j++) if (i !== r || j !== c) covered.add(i + "," + j);
       }
+      block.rows.forEach((row, r) => {
+        const tr = el.insertRow();
+        row.forEach((cell, c) => {
+          if (covered.has(r + "," + c)) return;
+          const td = tr.insertCell(), m = spans[r + "," + c];
+          td.textContent = cell;
+          if (m) { td.rowSpan = m.rows; td.colSpan = m.cols; }
+        });
+      });
       if (el.rows[0]) el.rows[0].style.fontWeight = "700";
       const wrap = document.createElement("div"); wrap.append(id, el); el = wrap;
     } else {

@@ -1,9 +1,10 @@
 """EditContext: the single path through which the document is mutated.
 
-Every insert and delete of a run or a block goes through four primitives
-(``insert_run``, ``delete_run``, ``insert_block``, ``delete_block``), and
-every formatting change announces itself through two hooks
-(``before_run_format``, ``before_paragraph_format``).
+Every insert and delete of a run, a block or a table cell goes through six
+primitives (``insert_run``, ``delete_run``, ``insert_block``, ``delete_block``,
+``insert_cell``, ``delete_cell``), and every formatting change announces
+itself through a hook (``before_run_format``, ``before_paragraph_format``,
+``before_cell_format``, ``before_row_format``, ``before_table_format``).
 
 With ``track_changes=False`` the primitives edit the XML directly. With
 ``track_changes=True`` they record Word revisions instead, so the result opens
@@ -13,8 +14,10 @@ in Word as redlines the reader can accept or reject:
   wrapped in ``w:del`` with their text turned into ``w:delText``
 - inserted and deleted paragraphs and table rows carry ``w:ins`` / ``w:del``
   on the paragraph mark (``w:pPr/w:rPr``) or the row (``w:trPr``)
+- inserted and deleted table cells (a column is one cell per row) carry
+  ``w:cellIns`` / ``w:cellDel`` in ``w:tcPr``
 - formatting changes keep the previous properties in ``w:rPrChange`` /
-  ``w:pPrChange``
+  ``w:pPrChange`` / ``w:tcPrChange`` / ``w:trPrChange`` / ``w:tblPrChange``
 - a moved paragraph stays where it was as ``w:moveFrom`` and appears at its
   new place as ``w:moveTo``, the two linked by a named move range
 
@@ -36,6 +39,9 @@ from lxml import etree
 
 from .ooxml import (
     AUTHOR,
+    CELL_DEL,
+    CELL_INS,
+    CELL_MERGE,
     DEL,
     DEL_INSTR_TEXT,
     DEL_TEXT,
@@ -58,11 +64,14 @@ from .ooxml import (
     TBLPREX,
     TC,
     TCPR,
+    TCPR_ORDER,
     TR,
     TRPR,
     TRPR_CHANGE,
     el,
     ensure_child,
+    get_or_add_props,
+    insert_in_order,
     get_or_add_ppr,
     get_or_add_rpr,
     iter_runs,
@@ -84,7 +93,7 @@ _KEPT_ON_RESTORE = {
     RPR: ((INS, DEL, MOVE_FROM, MOVE_TO), "before"),  # revision marks on a paragraph mark
     PPR: ((RPR, SECTPR), "after"),
     TRPR: ((INS, DEL), "after"),
-    TCPR: ((qn("w:cellIns"), qn("w:cellDel"), qn("w:cellMerge")), "after"),
+    TCPR: ((CELL_INS, CELL_DEL, CELL_MERGE), "after"),
     TBLPR: ((), "after"),
 }
 
@@ -202,7 +211,11 @@ class EditContext:
         for tr in block.iter(TR):
             if row_mark(tr, INS) is None:
                 self._mark_row(tr, "w:ins")
-        for p in block.iter(P):
+        self._mark_content_inserted(block)
+
+    def _mark_content_inserted(self, element: etree._Element) -> None:
+        """Mark every paragraph in ``element``, text and paragraph mark, as inserted."""
+        for p in element.iter(P):
             for run in list(iter_runs(p)):
                 holder = run.getparent()
                 if holder.tag not in _WRAPPERS:
@@ -224,11 +237,42 @@ class EditContext:
         for tr in block.iter(TR):
             if row_mark(tr, DEL) is None:
                 self._mark_row(tr, "w:del")
-        for p in block.iter(P):
+        self._mark_content_deleted(block)
+
+    def _mark_content_deleted(self, element: etree._Element) -> None:
+        for p in element.iter(P):
             for run in list(iter_runs(p)):
                 self.delete_run(run)
             if paragraph_mark(p, DEL) is None:
                 self._mark_paragraph(p, "w:del")
+
+    # ----------------------------------------------------------- table cells
+
+    def insert_cell(self, parent: etree._Element, index: int, tc: etree._Element) -> None:
+        """Insert a table cell into a row (inserting a column is one call per row)."""
+        parent.insert(index, tc)
+        if not self.tracking:
+            return
+        if _cell_mark(tc, CELL_INS) is None:
+            self._mark_cell(tc, "w:cellIns")
+        self._mark_content_inserted(tc)
+
+    def delete_cell(self, tc: etree._Element) -> None:
+        parent = tc.getparent()
+        if parent is None:
+            return
+        if not self.tracking or self._mine_move(_cell_mark(tc, CELL_INS)):
+            parent.remove(tc)  # untracked, or our own pending insertion simply goes
+            return
+        if _cell_mark(tc, CELL_DEL) is not None:
+            return  # already deleted
+        # Like a deleted row, the cell stays in the file until the reader
+        # accepts the change, and readers skip it (see ``tables.row_cells``).
+        self._mark_cell(tc, "w:cellDel")
+        self._mark_content_deleted(tc)
+
+    def _mark_cell(self, tc: etree._Element, tag: str) -> None:
+        insert_in_order(get_or_add_props(tc, "w:tcPr"), self._revision(tag), TCPR_ORDER)
 
     def move_block(self, block: etree._Element, parent: etree._Element, index: int) -> etree._Element:
         """Move a block to position ``index`` of ``parent`` (counted with the
@@ -301,6 +345,8 @@ class EditContext:
             return self._mine(paragraph_mark(block, INS))
         if block.tag == TR:
             return self._mine(row_mark(block, INS))
+        if block.tag == TC:
+            return self._mine_move(_cell_mark(block, CELL_INS))
         rows = list(block.iter(TR))
         if rows:
             return all(self._mine(row_mark(tr, INS)) for tr in rows)
@@ -361,6 +407,34 @@ class EditContext:
         change.append(previous)
         ppr.append(change)
 
+    def before_cell_format(self, tc: etree._Element) -> None:
+        """Call before changing a cell's properties (width, span, merge,
+        shading, alignment). When tracking, they are kept in ``w:tcPrChange``."""
+        if self.tracking and not self._mine_move(_cell_mark(tc, CELL_INS)):
+            self._keep_previous(get_or_add_props(tc, "w:tcPr"), "w:tcPrChange", (CELL_INS, CELL_DEL, CELL_MERGE))
+
+    def before_row_format(self, tr: etree._Element) -> None:
+        """Call before changing a row's properties (``w:trPrChange``)."""
+        if self.tracking and not self._mine(row_mark(tr, INS)):
+            self._keep_previous(get_or_add_props(tr, "w:trPr"), "w:trPrChange", (INS, DEL))
+
+    def before_table_format(self, tbl: etree._Element) -> None:
+        """Call before changing a table's properties (``w:tblPrChange``)."""
+        if self.tracking and not self._inserted_here(tbl):
+            self._keep_previous(get_or_add_props(tbl, "w:tblPr"), "w:tblPrChange", ())
+
+    def _keep_previous(self, props: etree._Element, change_tag: str, skip: tuple) -> None:
+        """Store a copy of ``props`` in a property-change revision, once."""
+        if props.find(qn(change_tag)) is not None:
+            return
+        previous = el("w:" + etree.QName(props).localname)
+        for child in props:
+            if child.tag not in skip:
+                previous.append(copy.deepcopy(child))
+        change = self._revision(change_tag)
+        change.append(previous)
+        props.append(change)
+
     # ------------------------------------------------- accepting / rejecting
 
     def resolve(self, node: etree._Element, accept: bool) -> None:
@@ -376,7 +450,16 @@ class EditContext:
                 self._restore_properties(parent, node)
             return
         # Content goes when an insertion is rejected or a deletion accepted.
-        goes = (node.tag in (INS, MOVE_TO)) != accept
+        goes = (node.tag in (INS, MOVE_TO, CELL_INS)) != accept
+        if node.tag in (CELL_INS, CELL_DEL):
+            cell = parent.getparent()
+            parent.remove(node)
+            if goes and cell is not None and cell.getparent() is not None:
+                row = next((a for a in cell.iterancestors() if a.tag == TR), None)
+                cell.getparent().remove(cell)
+                if row is not None and next(row.iter(TC), None) is None:
+                    self._remove_row(row)  # a row cannot be left without cells
+            return
         if parent.tag == TRPR:
             row = parent.getparent()
             _remove_with_empty_holders(node)
@@ -439,6 +522,11 @@ class EditContext:
                 following.insert(index, child)
                 index += 1
             holder.remove(p)
+
+
+def _cell_mark(tc: etree._Element, tag: str) -> etree._Element | None:
+    tcpr = tc.find(TCPR)
+    return tcpr.find(tag) if tcpr is not None else None
 
 
 def _remove_with_empty_holders(mark: etree._Element) -> None:
