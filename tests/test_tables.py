@@ -322,6 +322,125 @@ def test_cell_and_table_formatting(tmp_path):
     assert reopened.alignment is not None and reopened.columns[2].width.inches == 2.5
 
 
+def borders(doc: WordDocument, row: int, col: int, table: str = "b1") -> dict:
+    """side -> style of the cell's own borders."""
+    found = tables.cell_format(doc._cell(doc._get(table), row, col)).get("borders", {})
+    return {side: edge["style"] for side, edge in found.items()}
+
+
+def test_cell_borders_padding_and_text_direction(tmp_path):
+    doc = doc_from_body(PLAIN)
+    # A box around the middle row: its outline only, shared edges set on both sides.
+    assert doc.format_cells("b1[1,*]", border="double", border_sides="outer", border_color="C00000",
+                            border_width_pt=1.5) == 3
+    assert borders(doc, 1, 0) == {"top": "double", "left": "double", "bottom": "double"}
+    assert borders(doc, 1, 1) == {"top": "double", "bottom": "double"}
+    assert borders(doc, 1, 2) == {"top": "double", "bottom": "double", "right": "double"}
+    assert borders(doc, 0, 1) == {"bottom": "double"} and borders(doc, 2, 1) == {"top": "double"}
+    edge = tables.cell_format(doc._cell(doc._get("b1"), 1, 0))["borders"]["top"]
+    assert edge == {"style": "double", "width_pt": 1.5, "color": "C00000"}
+
+    # The lines between the cells of the first column, then one removed.
+    doc.format_cells("b1[*,0]", border_sides=["inner"])
+    assert borders(doc, 0, 0) == {"bottom": "single"} and borders(doc, 2, 0) == {"top": "single"}
+    doc.format_cells("b1[2,2]", border="none", border_sides="top")
+    assert borders(doc, 2, 2) == {"top": "none"} and borders(doc, 1, 2)["bottom"] == "none"
+
+    assert doc.format_cells("b1[0,*]", margins_in=0.1, text_direction="vertical") == 3
+    look = tables.cell_format(doc._cell(doc._get("b1"), 0, 2))
+    assert look["margins_in"] == 0.1 and look["text_direction"] == "vertical"
+    doc.format_cells("b1[0,2]", text_direction="horizontal")
+    assert "text_direction" not in tables.cell_format(doc._cell(doc._get("b1"), 0, 2))
+
+    doc.set_table_format("b1", borders="horizontal", cell_margins_in=0.05)
+    layout = doc.read("b1", 1, include_formatting=True)["blocks"][0]["format"]
+    assert layout["borders"] == "horizontal" and layout["cell_margins_in"] == 0.05
+    corner = next(c for c in layout["cells"] if c["cell"] == "b1[0,2]")
+    assert corner["margins_in"] == 0.1 and "text_direction" not in corner and set(corner["borders"]) == {"bottom"}
+
+    tbl = doc._get("b1")
+    assert in_order(children(tbl, "w:tblPr"), TBLPR_ORDER)
+    assert all(in_order(children(tc, "w:tcPr"), TCPR_ORDER) for tc in tbl.iter(qn("w:tc")))
+    for tc in tbl.iter(qn("w:tc")):
+        edges = tc.find(qn("w:tcPr")).find(qn("w:tcBorders"))
+        if edges is not None:
+            names = [e.tag.split("}")[1] for e in edges]
+            assert names == [n for n in ("top", "left", "bottom", "right") if n in names]
+
+    for bad, message in (
+        (dict(border="wavy"), "Invalid border "),
+        (dict(border_sides=["diagonal"]), "Invalid border_sides"),
+        (dict(border_width_pt=20), "between 0.25 and 6"),
+        (dict(margins_in=3), "between 0 and 1"),
+        (dict(text_direction="upside down"), "Invalid text_direction"),
+        ({}, "at least one cell property"),
+    ):
+        with pytest.raises(DocumentError, match=message):
+            doc.format_cells("b1", **bad)
+    with pytest.raises(DocumentError, match="Invalid borders"):
+        doc.set_table_format("b1", borders="zigzag")
+    assert len(reopen_with_python_docx(doc, tmp_path).tables[0].rows) == 3
+
+
+def test_border_of_a_merged_cell_runs_along_all_its_rows():
+    doc = doc_from_body(MERGED)
+    doc.format_cells("b1[1,0]", border="thick", border_sides=["left", "bottom", "top"])
+    grid = tables.build_grid(doc._get("b1"))
+    top, bottom = grid.at(1, 0).own, grid.at(2, 0).own
+    assert set(tables.cell_format(top)["borders"]) == {"top", "left"}
+    assert set(tables.cell_format(bottom)["borders"]) == {"left", "bottom"}
+    # A, above it, is wider than C, so its bottom edge is left alone.
+    assert borders(doc, 0, 0) == {}
+
+
+def test_tracked_borders_are_format_revisions_and_reject():
+    doc = tracked(PLAIN)
+    doc.format_cells("b1[0,0]", border="single", margins_in=0.1)
+    doc.set_table_format("b1", borders="none")
+    assert {r["type"] for r in doc.revisions()} == {"format"}
+    assert len(doc.revisions()) == 4  # the cell, its two neighbours, the table
+    doc.reject_revisions()
+    assert "tcBorders" not in doc.read_part_xml("word/document.xml")
+    layout = doc.read("b1", 1, include_formatting=True)["blocks"][0]["format"]
+    assert "cells" not in layout and "borders" not in layout
+
+
+LEGACY = (
+    f"<w:tbl>{TBLPR}{GRID}"
+    + "<w:tr>" + cell("Wide", '<w:hMerge w:val="restart"/>') + cell("", "<w:hMerge/>") + cell("B") + "</w:tr>"
+    + "<w:tr>" + cell("C") + cell("D") + cell("E") + "</w:tr>"
+    + "</w:tbl>"
+)
+
+
+def test_legacy_horizontal_merge_reads_as_one_cell(tmp_path):
+    doc = doc_from_body(LEGACY)
+    block = doc.read("b1", 1)["blocks"][0]
+    assert block["rows"] == [["Wide", "", "B"], ["C", "D", "E"]]
+    assert block["merged"] == [{"cell": "b1[0,0]", "rows": 1, "cols": 2}]
+    doc.set_cell_text("b1", 0, 1, "Wider")  # any position inside it
+    assert rows(doc)[0] == ["Wider", "", "B"]
+    assert "hMerge" in doc.read_part_xml("word/document.xml")  # reading and text edits leave the markup alone
+
+    doc.insert_table_column("b1", 1, ["x", "y"])
+    xml = doc.read_part_xml("word/document.xml")
+    assert "hMerge" not in xml and xml.count("<w:gridSpan") == 1
+    assert rows(doc) == [["Wider", "", "", "B"], ["C", "y", "D", "E"]]
+    tbl = doc._get("b1")
+    assert tables.span(doc._cell(tbl, 0, 0)) == 3
+    reopened = reopen_with_python_docx(doc, tmp_path).tables[0]
+    assert [c.text for c in reopened.rows[1].cells] == ["C", "y", "D", "E"]
+
+
+def test_legacy_merge_can_be_split():
+    doc = doc_from_body(LEGACY)
+    doc.unmerge_cells("b1", 0, 0)
+    assert "merged" not in doc.read("b1", 1)["blocks"][0]
+    assert rows(doc)[0] == ["Wide", "", "B"]
+    assert "hMerge" not in doc.read_part_xml("word/document.xml")
+    assert tables.cell_width(doc._cell(doc._get("b1"), 0, 0)) == (3000, "dxa")
+
+
 # ------------------------------------------------------------ tracked changes
 
 def test_tracked_columns_are_cell_revisions_that_accept_and_reject(tmp_path):

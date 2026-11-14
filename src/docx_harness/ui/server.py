@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -105,7 +106,8 @@ def make_handler(session: Session, model_label: str):
                 elif event.type == "tool_result" and event.data["result"].startswith("Error"):
                     emit({"type": "tool_error", "text": event.data["result"][:300]})
 
-            return create_agent(session.doc, llm=session.llm_factory(), on_event=on_event)
+            # Pictures come from the folder the server was started in, nowhere else.
+            return create_agent(session.doc, llm=session.llm_factory(), on_event=on_event, image_root=os.getcwd())
 
         # ---------------------------------------------------------- routing
 

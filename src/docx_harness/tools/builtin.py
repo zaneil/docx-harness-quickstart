@@ -7,10 +7,13 @@ call and finish in fewer round trips.
 from __future__ import annotations
 
 import json
+import os
 import re
+from pathlib import Path
 from typing import Literal, Optional
 
 from ..document import WordDocument
+from ..document.builtin_styles import ALL as BUILTIN_STYLES
 from .base import Tool, tool
 
 _PARAGRAPHS_SCHEMA = {
@@ -22,8 +25,9 @@ _PARAGRAPHS_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "Paragraph text. One paragraph (or one list item) per entry, without '-' or '1.' markers."},
+                    "text": {"type": "string", "description": "Paragraph text. One paragraph (or one list item) per entry, without '-' or '1.' markers. A link can be written as [text](https://address)."},
                     "style": {"type": "string", "description": "Paragraph style name, e.g. 'Title', 'Heading 1', 'List Bullet'. Omit for normal body text."},
+                    "level": {"type": "integer", "description": "For list items only: nesting level, 0 (default) for the outer list, 1 for a sub-item, up to 8."},
                 },
                 "required": ["text"],
             },
@@ -40,6 +44,27 @@ _PARAGRAPHS_SCHEMA = {
 _BULLET = re.compile(r"^\s*[-*•–]\s+")
 _HEADING = re.compile(r"^\s*(#{1,3})\s+(.*)$")
 _NUMBER = re.compile(r"^\s*\d+[.)]\s+")
+_MD_LINK = re.compile(r"\[([^\[\]]+)\]\(((?:https?://|mailto:)[^\s()]+)\)")
+# Well-known styles the document layer adds to a file the first time they are used.
+_CREATABLE = sorted({style.name.lower() for style in BUILTIN_STYLES if style.type == "paragraph"})
+
+
+def _levels(lines: list[str]) -> list[int]:
+    """Nesting level of each line of a markdown-style list, from its indentation."""
+    indents = [len(line.expandtabs(4)) - len(line.expandtabs(4).lstrip()) for line in lines]
+    base = min(indents)
+    step = min((i - base for i in indents if i > base), default=2)
+    return [min((i - base) // max(step, 1), 8) for i in indents]
+
+
+def _split_links(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Plain text and the (label, address) pairs of the markdown links in it."""
+    found = [(m.group(1), m.group(2)) for m in _MD_LINK.finditer(text)]
+    return _MD_LINK.sub(lambda m: m.group(1), text), found
+
+
+def _item(text: str, style: str | None, level: int | None) -> dict:
+    return {"text": text, "style": style, **({"level": level} if level else {})}
 
 
 def normalize_paragraphs(items: list, available_styles: set[str]) -> list[dict]:
@@ -52,6 +77,7 @@ def normalize_paragraphs(items: list, available_styles: set[str]) -> list[dict]:
             item = {"text": item}
         text = str(item.get("text", ""))
         style = item.get("style") or None
+        level = item.get("level")
         lines = [line for line in text.split("\n") if line.strip()]
         if len(lines) > 1 and all(line.strip().startswith("|") for line in lines):
             raise ValueError(
@@ -68,24 +94,41 @@ def normalize_paragraphs(items: list, available_styles: set[str]) -> list[dict]:
             if lines and all(marker.match(line) for line in lines) and (len(lines) > 1 or is_list_style):
                 target = style if is_list_style else auto_style
                 if is_list_style or auto_style.lower() in available_styles:
-                    out.extend({"text": marker.sub("", line).strip(), "style": target} for line in lines)
+                    nesting = _levels(lines)
+                    out.extend(_item(marker.sub("", line).strip(), target, (level or 0) + depth)
+                               for line, depth in zip(lines, nesting))
                     handled = True
                 break
         if handled:
             continue
         if "\n\n" in text:
-            out.extend({"text": part.strip(), "style": style} for part in re.split(r"\n\s*\n", text) if part.strip())
+            out.extend(_item(part.strip(), style, level) for part in re.split(r"\n\s*\n", text) if part.strip())
         else:
-            out.append({"text": text, "style": style})
+            out.append(_item(text, style, level))
     return out
 
 
-def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
+def default_tools(doc: WordDocument, include_raw: bool = False,
+                  image_root: str | os.PathLike | None = None) -> list[Tool]:
     """Build the built-in tools for ``doc``.
 
     ``include_raw=True`` adds ``write_part_xml``, which lets the model replace
     raw XML parts. It is off by default because a bad write can corrupt the file.
+
+    ``image_root`` limits ``insert_image`` to files inside that folder
+    (relative paths are taken from it). Without it any readable image file on
+    this machine can be inserted, which suits a command line run by its user.
     """
+
+    def image_path(path: str) -> Path:
+        candidate = Path(str(path)).expanduser()
+        if image_root is None:
+            return candidate
+        root = Path(image_root).resolve()
+        resolved = (candidate if candidate.is_absolute() else root / candidate).resolve()
+        if root != resolved and root not in resolved.parents:
+            raise ValueError(f"Images can only be read from {root}. Give a path inside that folder.")
+        return resolved
 
     # ------------------------------------------------------------------ read
 
@@ -103,6 +146,8 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         lines = []
         for e in entries:
             label = e.get("style") or e["type"]
+            if e.get("list", {}).get("level"):
+                label += f", level {e['list']['level']}"
             lines.append(f"{e['id']} [{label}] {e['preview']}")
         total = len(doc)
         if len(entries) < total:
@@ -111,12 +156,12 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
 
     @tool(read_only=True)
     def read_blocks(start: Optional[str] = None, count: int = 20, include_formatting: bool = False) -> str:
-        """Read the full content of consecutive blocks. Paragraphs return text and style. Tables return rows on the column grid, plus 'merged' (cells spanning several positions) and 'nested' (ids of tables inside cells) when present.
+        """Read the full content of consecutive blocks. Paragraphs return text and style, plus 'list' (bullet or number, and nesting level), 'links' and 'images' when present. Tables return rows on the column grid, plus 'merged' (cells spanning several positions) and 'nested' (ids of tables inside cells) when present.
 
         Args:
             start: Id of the first block to read, or the id of a nested table to read just that table. Omit to start at the top.
             count: Number of blocks to read.
-            include_formatting: Also return paragraph alignment, spacing, indents and runs (bold, italic, color, size), and for tables column widths, header rows and cell shading.
+            include_formatting: Also return paragraph alignment, spacing, indents and runs (bold, italic, color, size), and for tables column widths, header rows, borders and cell shading, borders and padding.
         """
         return json.dumps(doc.read(start, count, include_formatting), ensure_ascii=False)
 
@@ -133,20 +178,33 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
 
     @tool(read_only=True)
     def list_styles() -> str:
-        """List the paragraph and table styles available in this document."""
+        """List the paragraph, character and table styles available in this document, and the standard ones that are added automatically the first time you use them."""
         styles = doc.list_styles()
         paragraph = sorted(s["name"] for s in styles if s["type"] == "paragraph")
+        character = sorted(s["name"] for s in styles if s["type"] == "character" and not s["default"])
         table = sorted(s["name"] for s in styles if s["type"] == "table")
-        return f"Paragraph styles: {', '.join(paragraph) or '(none)'}\nTable styles: {', '.join(table) or '(none)'}"
+        have = {name.lower() for name in paragraph}
+        extra = [name for name in _CREATABLE if name not in have]
+        lines = [f"Paragraph styles: {', '.join(paragraph) or '(none)'}"]
+        if character:
+            lines.append(f"Character styles: {', '.join(character)}")
+        lines.append(f"Table styles: {', '.join(table) or '(none)'}")
+        if extra:
+            lines.append(f"Also usable (added to the document when first used): {', '.join(extra)}")
+        lines.append("For any other look, define a style with create_style.")
+        return "\n".join(lines)
 
     @tool(read_only=True)
     def read_headers_footnotes() -> str:
-        """Read the text of the document's headers, footers, footnotes and endnotes, grouped by part name. Edit that text with replace_text, passing the part name as block."""
+        """Read the text of the document's headers, footers, footnotes and endnotes, grouped by part name. Page number fields show as {PAGE} and {NUMPAGES}. Change a few words with replace_text (part name as block), restyle with format_text or set_paragraph_format (part name in blocks), or rewrite a header or footer with set_header_footer."""
         sections = []
         for story in doc.stories():
             lines = [f"  {text}" for text in story["paragraphs"] if text.strip()]
-            sections.append(f"{story['part']} ({story['kind']}):\n" + ("\n".join(lines) or "  (empty)"))
-        return "\n".join(sections) or "The document has no headers, footers, footnotes or endnotes."
+            pages = {"first": ", first page only", "even": ", even pages"}.get(story.get("page"), "")
+            sections.append(f"{story['part']} ({story['kind']}{pages}):\n" + ("\n".join(lines) or "  (empty)"))
+        return "\n".join(sections) or (
+            "The document has no headers, footers, footnotes or endnotes. Create a header or footer with set_header_footer."
+        )
 
     @tool(read_only=True)
     def list_revisions(limit: int = 100) -> str:
@@ -173,14 +231,17 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
 
     @tool(parameters=_PARAGRAPHS_SCHEMA)
     def insert_paragraphs(paragraphs: list, after: str = "end") -> str:
-        """Insert one or more paragraphs (headings, body text, list items) at a position. Use a style for headings and lists rather than manual formatting."""
+        """Insert one or more paragraphs (headings, body text, list items) at a position. Use a style for headings and lists rather than manual formatting. Numbered items placed after a numbered item continue its list; elsewhere they start a new list at 1."""
         if not isinstance(paragraphs, list) or not paragraphs:
             raise ValueError("paragraphs must be a non-empty list of {text, style} objects")
-        available = {s["name"].lower() for s in doc.list_styles("paragraph")}
+        available = {s["name"].lower() for s in doc.list_styles("paragraph")} | set(_CREATABLE)
         ids = []
         anchor = after
         for item in normalize_paragraphs(paragraphs, available):
-            anchor = doc.insert_paragraph(item["text"], item["style"], anchor)
+            text, found = _split_links(item["text"])
+            anchor = doc.insert_paragraph(text, item["style"], anchor, item.get("level"))
+            for label, url in dict.fromkeys(found):
+                doc.add_hyperlink(anchor, url, match=label)
             ids.append(anchor)
         return f"Inserted {len(ids)} paragraph(s): {', '.join(ids)}"
 
@@ -213,6 +274,62 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         """
         return f"Inserted page break {doc.insert_page_break(after)}"
 
+    @tool
+    def insert_image(
+        path: str,
+        after: str = "end",
+        width_in: Optional[float] = None,
+        height_in: Optional[float] = None,
+        alt_text: str = "",
+        alignment: Optional[Literal["left", "center", "right"]] = None,
+    ) -> str:
+        """Insert a picture from a PNG, JPEG or GIF file, in a paragraph of its own. Without a size it keeps its natural size, reduced to fit between the margins. Delete it with delete_blocks.
+
+        Args:
+            path: Path of the image file.
+            after: Where to insert: a block id (insert after it), 'start' or 'end'.
+            width_in: Width in inches. The height follows unless height_in is also given.
+            height_in: Height in inches. The width follows unless width_in is also given.
+            alt_text: A short description of the picture for readers who cannot see it.
+            alignment: Where the picture sits between the margins.
+        """
+        block_id = doc.insert_image(image_path(path), after, width_in, height_in, alt_text, alignment)
+        size = doc.read(block_id, 1)["blocks"][0]["images"][0]
+        return f"Inserted image {block_id} ({size['width_in']} x {size['height_in']} in)."
+
+    @tool
+    def set_image(block_id: str, width_in: Optional[float] = None, height_in: Optional[float] = None,
+                  alt_text: Optional[str] = None) -> str:
+        """Resize a picture or change its alt text. Give one dimension to keep the proportions.
+
+        Args:
+            block_id: Id of the block holding the picture.
+            width_in: New width in inches.
+            height_in: New height in inches.
+            alt_text: New description of the picture.
+        """
+        doc.set_image(block_id, width_in, height_in, alt_text)
+        size = doc.read(block_id, 1)["blocks"][0]["images"][0]
+        return f"Updated the image in {block_id} ({size['width_in']} x {size['height_in']} in)."
+
+    @tool
+    def set_header_footer(
+        kind: Literal["header", "footer"],
+        text: str,
+        page: Literal["default", "first", "even"] = "default",
+        alignment: Optional[Literal["left", "center", "right"]] = None,
+    ) -> str:
+        """Set the text of the page header or footer, creating it if the document has none. Replaces what was there.
+
+        Args:
+            kind: 'header' (top of the page) or 'footer' (bottom).
+            text: The text. Each line is a paragraph. Write {PAGE} for the page number and {NUMPAGES} for the page count, e.g. 'Page {PAGE} of {NUMPAGES}'. A tab character moves to the centre, a second one to the right edge. Use an empty string for a blank one.
+            page: Which pages show it: 'default' for all pages, 'first' for a different first page (e.g. a blank header on a cover page), 'even' for different even pages.
+            alignment: Alignment of the text.
+        """
+        part = doc.set_header(text, page, alignment) if kind == "header" else doc.set_footer(text, page, alignment)
+        return f"Set the {kind} ({part}). To restyle it, pass '{part}' in blocks to format_text or set_paragraph_format."
+
     # ---------------------------------------------------------------- update
 
     @tool
@@ -238,6 +355,33 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         """
         count = doc.replace_text(find, replace, block, case_sensitive)
         return f"Replaced {count} occurrence(s)." if count else f"No occurrences of {find!r} found; nothing changed."
+
+    @tool
+    def add_hyperlink(blocks: list[str], url: str, match: Optional[str] = None) -> str:
+        """Turn existing text into a clickable link. Text that is already a link is pointed at the new address.
+
+        Args:
+            blocks: Block ids, table cells like 'b3[0,1]' or part names from read_headers_footnotes.
+            url: Full address starting with https://, http:// or mailto:.
+            match: Only link this exact text within the blocks. Omit to link all the text of each block.
+        """
+        if isinstance(blocks, str):
+            blocks = [blocks]
+        count = sum(doc.add_hyperlink(ref, url, match) for ref in blocks)
+        return f"Linked {count} piece(s) of text to {url}."
+
+    @tool
+    def remove_hyperlink(blocks: list[str], match: Optional[str] = None) -> str:
+        """Turn links back into plain text. The text itself stays.
+
+        Args:
+            blocks: Block ids, table cells like 'b3[0,1]' or part names from read_headers_footnotes.
+            match: Only remove links whose text contains this. Omit to remove every link in the blocks.
+        """
+        if isinstance(blocks, str):
+            blocks = [blocks]
+        count = sum(doc.remove_hyperlink(ref, match) for ref in blocks)
+        return f"Removed {count} link(s)."
 
     @tool
     def set_table_cell(table_id: str, row: int, col: int, text: str) -> str:
@@ -384,6 +528,68 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         return f"Applied style {style!r} to {count} paragraph(s)."
 
     @tool
+    def create_style(
+        name: str,
+        based_on: str = "Normal",
+        style_type: Literal["paragraph", "character"] = "paragraph",
+        font: Optional[str] = None,
+        size_pt: Optional[float] = None,
+        bold: Optional[bool] = None,
+        italic: Optional[bool] = None,
+        color: Optional[str] = None,
+        alignment: Optional[Literal["left", "center", "right", "justify"]] = None,
+        space_before_pt: Optional[float] = None,
+        space_after_pt: Optional[float] = None,
+        line_spacing: Optional[float] = None,
+        indent_left_in: Optional[float] = None,
+    ) -> str:
+        """Define a new named style, for a look that will be used in several places (e.g. 'Callout', 'Code'). Standard styles such as 'Heading 4' or 'Caption' need no definition: just use them. Apply the new style with set_paragraph_style or insert_paragraphs.
+
+        Args:
+            name: Name of the new style.
+            based_on: Existing style it inherits from.
+            style_type: 'paragraph' for whole paragraphs. 'character' styles are defined only; apply character formatting with format_text.
+            font: Font family name.
+            size_pt: Font size in points.
+            bold: Bold text.
+            italic: Italic text.
+            color: Text color as 6-digit hex or a basic color name.
+            alignment: Paragraph alignment (paragraph styles only).
+            space_before_pt: Space above each paragraph in points (paragraph styles only).
+            space_after_pt: Space below each paragraph in points (paragraph styles only).
+            line_spacing: Line spacing multiple (paragraph styles only).
+            indent_left_in: Left indent in inches (paragraph styles only).
+        """
+        created = doc.create_style(
+            name, based_on, style_type, font=font, size_pt=size_pt, bold=bold, italic=italic, color=color,
+            alignment=alignment, space_before_pt=space_before_pt, space_after_pt=space_after_pt,
+            line_spacing=line_spacing, indent_left_in=indent_left_in,
+        )
+        return f"Created {style_type} style {created!r}."
+
+    @tool
+    def set_list_format(blocks: list[str], level: Optional[int] = None, start_at: Optional[int] = None) -> str:
+        """Change list items: nest them under the item above, or restart the numbering. The blocks must already be list items (style 'List Bullet' or 'List Number'). Give at least one of level and start_at.
+
+        Args:
+            blocks: Ids of the list items.
+            level: Nesting level for all the blocks: 0 for the outer list, 1 for sub-items, up to 8.
+            start_at: Restart the numbering at the first block with this number (usually 1). Later items of the same list follow on from it.
+        """
+        if isinstance(blocks, str):
+            blocks = [blocks]
+        if level is None and start_at is None:
+            raise ValueError("Give level, start_at or both. Nothing was changed.")
+        done = []
+        if level is not None:
+            count = sum(doc.set_list_level(ref, level) for ref in blocks)
+            done.append(f"set {count} item(s) to level {level}")
+        if start_at is not None:
+            count = doc.restart_numbering(blocks[0], start_at)
+            done.append(f"restarted numbering at {start_at} from {blocks[0]} ({count} item(s) renumbered)")
+        return (", ".join(done)).capitalize() + "."
+
+    @tool
     def format_text(
         blocks: list[str],
         match: Optional[str] = None,
@@ -466,17 +672,33 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         cells: list[str],
         shading: Optional[str] = None,
         vertical_align: Optional[Literal["top", "center", "bottom"]] = None,
+        border: Optional[Literal["single", "double", "dashed", "dotted", "thick", "none"]] = None,
+        border_sides: Optional[list[Literal["all", "outer", "inner", "top", "bottom", "left", "right"]]] = None,
+        border_color: Optional[str] = None,
+        border_width_pt: Optional[float] = None,
+        margins_in: Optional[float] = None,
+        text_direction: Optional[Literal["horizontal", "vertical", "vertical_up"]] = None,
     ) -> str:
-        """Set the background color and vertical alignment of table cells. For the text in the cells (bold, color, horizontal alignment) use format_text and set_paragraph_format with the same references.
+        """Set the background color, vertical alignment, border lines, padding and text direction of table cells. For the text in the cells (bold, color, horizontal alignment) use format_text and set_paragraph_format with the same references.
 
         Args:
             cells: Cells like 'b3[0,1]', rows like 'b3[0,*]', columns like 'b3[*,1]', or a table id for every cell.
             shading: Background color as 6-digit hex (e.g. 'D9E2F3') or a basic color name; 'none' removes it.
             vertical_align: Where the text sits in the cell.
+            border: Line style for the borders named in border_sides; 'none' removes those lines.
+            border_sides: Which lines: 'all' (default), 'outer' (a box around the referenced cells taken together), 'inner' (the lines between them), or 'top', 'bottom', 'left', 'right' of each cell.
+            border_color: Line color as 6-digit hex or a basic color name.
+            border_width_pt: Line width in points, 0.25 to 6 (default 0.5).
+            margins_in: Padding between the cell's edges and its text, in inches.
+            text_direction: 'vertical' turns the text to read top to bottom, 'vertical_up' bottom to top.
         """
         if isinstance(cells, str):
             cells = [cells]
-        count = sum(doc.format_cells(ref, shading, vertical_align) for ref in cells)
+        count = sum(
+            doc.format_cells(ref, shading, vertical_align, border, border_sides, border_color, border_width_pt,
+                             margins_in, text_direction)
+            for ref in cells
+        )
         return f"Formatted {count} cell(s)."
 
     @tool
@@ -485,16 +707,20 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
         column_widths_in: Optional[list[float]] = None,
         header_rows: Optional[int] = None,
         alignment: Optional[Literal["left", "center", "right"]] = None,
+        borders: Optional[Literal["all", "none", "outer", "horizontal"]] = None,
+        cell_margins_in: Optional[float] = None,
     ) -> str:
-        """Set a table's layout: column widths, repeating header rows and position on the page. Give at least one.
+        """Set a table's layout: column widths, repeating header rows, position on the page, border lines and cell padding. Give at least one.
 
         Args:
             table_id: Id of the table block.
             column_widths_in: Width of every column in inches, left to right, one per column.
             header_rows: How many rows at the top repeat on each page the table runs onto; 0 for none.
             alignment: Where the table sits between the margins.
+            borders: The table's lines: 'all' (a full grid), 'none', 'outer' (a box only) or 'horizontal' (rules between rows, no vertical lines). Lines on particular cells are set with format_table_cells.
+            cell_margins_in: Padding inside every cell, in inches.
         """
-        doc.set_table_format(table_id, column_widths_in, header_rows, alignment)
+        doc.set_table_format(table_id, column_widths_in, header_rows, alignment, borders, cell_margins_in)
         done = []
         if column_widths_in is not None:
             done.append(f"{len(column_widths_in)} column width(s)")
@@ -502,6 +728,10 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
             done.append(f"{header_rows} header row(s)")
         if alignment is not None:
             done.append(f"alignment {alignment}")
+        if borders is not None:
+            done.append(f"borders {borders}")
+        if cell_margins_in is not None:
+            done.append(f"cell padding {cell_margins_in} in")
         return f"Set {', '.join(done)} on {table_id}."
 
     # ------------------------------------------------------------- revisions
@@ -590,11 +820,13 @@ def default_tools(doc: WordDocument, include_raw: bool = False) -> list[Tool]:
 
     tools = [
         get_outline, read_blocks, search_text, list_styles, read_headers_footnotes, list_revisions,
-        insert_paragraphs, insert_table, insert_page_break,
-        update_paragraph, replace_text, set_table_cell, insert_table_row, insert_table_column,
+        insert_paragraphs, insert_table, insert_page_break, insert_image, set_image, set_header_footer,
+        update_paragraph, replace_text, add_hyperlink, remove_hyperlink,
+        set_table_cell, insert_table_row, insert_table_column,
         merge_table_cells, unmerge_table_cells, move_blocks,
         delete_table_row, delete_table_column, delete_blocks,
-        set_paragraph_style, format_text, set_paragraph_format, format_table_cells, set_table_format,
+        set_paragraph_style, create_style, set_list_format, format_text, set_paragraph_format,
+        format_table_cells, set_table_format,
         accept_revisions, reject_revisions,
         list_parts, read_part_xml,
     ]

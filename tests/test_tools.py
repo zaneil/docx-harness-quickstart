@@ -181,3 +181,117 @@ async def test_teaching_messages(doc):
     result = await registry.aexecute("insert_paragraphs", {"paragraphs": [{"text": "| a | b |\n|---|---|\n| 1 | 2 |"}]})
     assert result.startswith("Error:") and "insert_table" in result
     assert len(doc) == 1
+
+
+# ------------------------------------------------ content tools (section 6)
+
+def _png(width: int = 96, height: int = 48) -> bytes:
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload))
+
+    rows = b"".join(b"\x00" + b"\x7f" * (3 * width) for _ in range(height))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def test_new_tool_schemas(doc):
+    tools = {t.name: t for t in default_tools(doc)}
+    sides = tools["format_table_cells"].parameters["properties"]["border_sides"]
+    assert sides["type"] == "array" and "outer" in sides["items"]["enum"]
+    assert tools["insert_paragraphs"].parameters["properties"]["paragraphs"]["items"]["properties"]["level"]["type"] == "integer"
+    assert tools["set_header_footer"].parameters["required"] == ["kind", "text"]
+    for name in ("insert_image", "set_image", "set_header_footer", "add_hyperlink", "remove_hyperlink",
+                 "create_style", "set_list_format"):
+        assert not tools[name].read_only
+
+
+def test_insert_paragraphs_nests_lists_and_makes_links(doc, tmp_path):
+    registry = ToolRegistry(default_tools(doc))
+    result = registry.execute("insert_paragraphs", {"paragraphs": [
+        {"text": "Plan", "style": "Heading 4"},
+        {"text": "See [the guide](https://example.com/guide) and [mail us](mailto:a@example.com)."},
+        {"text": "1. First\n2. Second\n   1. Second, part a\n3. Third"},
+        {"text": "Loose bullet", "style": "List Bullet", "level": 1},
+    ]})
+    assert result.startswith("Inserted 7 paragraph(s)")
+    blocks = doc.read()["blocks"]
+    assert blocks[0]["style"] == "heading 4"
+    assert blocks[1]["text"] == "See the guide and mail us."
+    assert blocks[1]["links"] == [{"text": "the guide", "url": "https://example.com/guide"},
+                                  {"text": "mail us", "url": "mailto:a@example.com"}]
+    assert [b["list"]["level"] for b in blocks[2:]] == [0, 0, 1, 0, 1]
+    assert [b["text"] for b in blocks[2:6]] == ["First", "Second", "Second, part a", "Third"]
+    outline = registry.execute("get_outline", {})
+    assert "[List Number, level 1] Second, part a" in outline and "[List Number] Third" in outline
+
+    ids = [b["id"] for b in blocks]
+    assert registry.execute("set_list_format", {"blocks": [ids[5]], "level": 1, "start_at": 4}) == (
+        f"Set 1 item(s) to level 1, restarted numbering at 4 from {ids[5]} (1 item(s) renumbered).")
+    assert "Give level, start_at or both" in registry.execute("set_list_format", {"blocks": [ids[5]]})
+    assert "not a list item" in registry.execute("set_list_format", {"blocks": [ids[0]], "level": 1})
+    assert registry.execute("remove_hyperlink", {"blocks": [ids[1]], "match": "mail"}) == "Removed 1 link(s)."
+    assert registry.execute("add_hyperlink", {"blocks": [ids[0]], "url": "https://example.com"}) == (
+        "Linked 1 piece(s) of text to https://example.com.")
+    assert registry.execute("add_hyperlink", {"blocks": [ids[0]], "url": "ftp://x"}).startswith("Error: Invalid link address")
+    doc.save(tmp_path / "out.docx")
+
+
+def test_style_tools(doc):
+    registry = ToolRegistry(default_tools(doc))
+    listing = registry.execute("list_styles", {})
+    assert "Also usable (added to the document when first used): caption, footer, header, heading 4" in listing
+    assert "create_style" in listing
+    assert registry.execute("create_style", {"name": "Callout", "based_on": "Quote", "bold": True, "color": "red"}) == (
+        "Created paragraph style 'Callout'.")
+    block = doc.insert_paragraph("text")
+    assert registry.execute("set_paragraph_style", {"blocks": [block], "style": "Callout"}).startswith("Applied")
+    assert registry.execute("set_paragraph_style", {"blocks": [block], "style": "Caption"}).startswith("Applied")
+    error = registry.execute("set_paragraph_style", {"blocks": [block], "style": "Nope"})
+    assert error.startswith("Error:") and "create_style" in error
+    assert "already exists" in registry.execute("create_style", {"name": "callout"})
+    assert "Character styles" not in listing and "Callout" in registry.execute("list_styles", {})
+
+
+def test_image_tool_and_image_root(doc, tmp_path):
+    inside = tmp_path / "assets"
+    inside.mkdir()
+    (inside / "logo.png").write_bytes(_png())
+    (tmp_path / "outside.png").write_bytes(_png())
+
+    registry = ToolRegistry(default_tools(doc, image_root=inside))
+    result = registry.execute("insert_image", {"path": "logo.png", "alt_text": "Logo", "alignment": "center"})
+    assert result == "Inserted image b1 (1.0 x 0.5 in)."
+    assert registry.execute("insert_image", {"path": str(inside / "logo.png"), "width_in": 2}).endswith("(2.0 x 1.0 in).")
+    for escape in ("../outside.png", str(tmp_path / "outside.png")):
+        assert registry.execute("insert_image", {"path": escape}).startswith("Error: Images can only be read from")
+    assert registry.execute("insert_image", {"path": "missing.png"}).startswith("Error: Cannot read the image file")
+    assert registry.execute("set_image", {"block_id": "b1", "height_in": 1}) == "Updated the image in b1 (2.0 x 1.0 in)."
+    assert "[Normal] [image: Logo]" in registry.execute("get_outline", {})
+    assert len(doc) == 2
+
+    anywhere = ToolRegistry(default_tools(doc))
+    assert anywhere.execute("insert_image", {"path": str(tmp_path / "outside.png")}).startswith("Inserted image")
+
+
+def test_header_footer_and_table_format_tools(doc):
+    registry = ToolRegistry(default_tools(doc))
+    result = registry.execute("set_header_footer", {"kind": "footer", "text": "Page {PAGE} of {NUMPAGES}", "alignment": "center"})
+    assert result.startswith("Set the footer (word/footer1.xml).")
+    registry.execute("set_header_footer", {"kind": "header", "text": "", "page": "first"})
+    listing = registry.execute("read_headers_footnotes", {})
+    assert "word/footer1.xml (footer):\n  Page {PAGE} of {NUMPAGES}" in listing
+    assert "word/header1.xml (header, first page only):\n  (empty)" in listing
+    assert registry.execute("format_text", {"blocks": ["word/footer1.xml"], "size_pt": 9}).startswith("Formatted")
+
+    registry.execute("insert_table", {"rows": [["a", "b"], ["c", "d"]]})
+    assert registry.execute("format_table_cells", {
+        "cells": ["b1[0,*]"], "border": "thick", "border_sides": ["bottom"], "margins_in": 0.08,
+    }) == "Formatted 2 cell(s)."
+    assert registry.execute("set_table_format", {"table_id": "b1", "borders": "horizontal", "cell_margins_in": 0.05}) == (
+        "Set borders horizontal, cell padding 0.05 in on b1.")
+    layout = json.loads(registry.execute("read_blocks", {"include_formatting": True}))["blocks"][0]["format"]
+    assert layout["borders"] == "horizontal" and layout["cells"][0]["borders"]["bottom"]["style"] == "thick"
+    assert registry.execute("format_table_cells", {"cells": ["b1"], "border": "wavy"}).startswith("Error: Invalid border")
