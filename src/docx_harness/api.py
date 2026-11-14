@@ -20,6 +20,7 @@ def create_agent(
     model: str | None = None,
     extra_tools: Iterable[Tool | Callable] = (),
     include_raw: bool = False,
+    image_root: str | os.PathLike | None = None,
     system_prompt: str | None = None,
     max_steps: int = 40,
     on_event: EventCallback | None = None,
@@ -29,12 +30,14 @@ def create_agent(
     ``extra_tools`` are registered after the defaults, so a tool with the same
     name as a built-in replaces it. Without a ``system_prompt`` the agent gets
     the default Word prompt, plus redlining guidance when ``doc`` tracks changes.
+    ``image_root`` limits the ``insert_image`` tool to files inside that folder;
+    by default it can read any image file the process can.
     """
     if system_prompt is None:
         system_prompt = WORD_SYSTEM_PROMPT
         if doc.edits.track_changes:
             system_prompt = f"{system_prompt}\n\n{TRACK_CHANGES_PROMPT}"
-    registry = ToolRegistry(default_tools(doc, include_raw=include_raw))
+    registry = ToolRegistry(default_tools(doc, include_raw=include_raw, image_root=image_root))
     for item in extra_tools:
         registry.register(item)
     return Agent(

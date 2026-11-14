@@ -22,15 +22,20 @@ from pathlib import Path
 
 from lxml import etree
 
-from . import styling, tables
+from . import builtin_styles, images, numbering, styling, tables
 from .edits import EditContext
 from .ooxml import (
     AUTHOR,
     BODY,
+    BR,
     CELL_DEL,
     CELL_INS,
+    CR,
     DEL,
     DEL_TEXT,
+    DRAWING,
+    FLD_SIMPLE,
+    HYPERLINK,
     INS,
     P,
     PPR,
@@ -42,16 +47,24 @@ from .ooxml import (
     R,
     RPR,
     RPR_CHANGE,
+    RPR_ORDER,
+    R_ID,
     SDT,
     SECTPR,
+    SECTPR_ORDER,
+    SETTINGS_BEFORE_EVEN_AND_ODD,
     SETTINGS_BEFORE_TRACK_REVISIONS,
     T,
+    TAB,
     TBL,
     TCPR,
     TR,
     TRACK_REVISIONS,
     TRPR,
+    W_NS,
     el,
+    ensure_child,
+    get_or_add_rpr,
     insert_after_any,
     is_deleted_block,
     isolate_range,
@@ -79,6 +92,16 @@ _NOT_COPIED_TO_NEW_CELLS = ("w:gridSpan", "w:hMerge", "w:vMerge", "w:cellIns", "
 # (None when the whole part is one story).
 _STORY_KINDS = {"header": None, "footer": None, "footnotes": qn("w:footnote"), "endnotes": qn("w:endnote")}
 _NOTE_SEPARATORS = ("separator", "continuationSeparator", "continuationNotice")
+_PAGES = ("default", "first", "even")
+_FIELD_TOKEN = re.compile(r"\{(PAGE|NUMPAGES)\}")
+_HEADER_FOOTER_TYPES = {
+    "header": "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml",
+    "footer": "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml",
+}
+_SETTINGS_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
+_TEXT_CHILDREN = (RPR, T, TAB, BR, CR)
+_URL_SCHEMES = ("http", "https", "mailto")
+_VAL = qn("w:val")
 PAGE_WIDTH_TWIPS = 9360  # 6.5in text width on Letter with 1in margins
 
 
@@ -137,16 +160,51 @@ class WordDocument:
         if body is None:
             raise DocumentError("Document has no body")
         self._body = body
-        self.edits.bind(root, *(story for _, _, story in self._story_roots()))
+        self._bind()
         self._ids: dict[str, etree._Element] = {}
         self._by_element: dict[etree._Element, str] = {}
         for element in self._block_elements():
             self._id_of(element)
 
+    def _bind(self) -> None:
+        """Tell the edit context which parts hold content (for revision ids)."""
+        self.edits.bind(self._body.getroottree().getroot(), *(story for _, _, story in self._story_roots()))
+
     @property
     def _styles(self) -> etree._Element | None:
         part = self.package.styles_part
         return self.package.xml(part) if part else None
+
+    def _part_beside_main(self, filename: str) -> str:
+        folder = self.package.main_document_part.rpartition("/")[0]
+        return f"{folder}/{filename}" if folder else filename
+
+    def _styles_root(self) -> etree._Element:
+        """The styles part, created with the default styles when the file has none."""
+        if self.package.styles_part is None:
+            xml = (
+                f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:styles xmlns:w="{W_NS}">'
+                + builtin_styles.DOC_DEFAULTS + "".join(style.xml() for style in builtin_styles.BASE) + "</w:styles>"
+            )
+            name = self.package.add_part(
+                self._part_beside_main("styles.xml"), xml,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml",
+            )
+            self.package.relate(self.package.main_document_part, "styles", name)
+        return self.package.xml(self.package.styles_part)
+
+    @property
+    def _numbering(self) -> etree._Element | None:
+        part = self.package.numbering_part
+        return self.package.xml(part) if part else None
+
+    def _numbering_root(self) -> etree._Element:
+        """The numbering part, created empty when the file has none."""
+        if self.package.numbering_part is None:
+            name = self.package.add_part(self._part_beside_main("numbering.xml"), numbering.EMPTY_PART,
+                                         numbering.CONTENT_TYPE)
+            self.package.relate(self.package.main_document_part, "numbering", name)
+        return self.package.xml(self.package.numbering_part)
 
     # -------------------------------------------------------------- block ids
 
@@ -259,11 +317,148 @@ class WordDocument:
     def stories(self) -> list[dict]:
         """The text outside the body: one entry per header, footer, footnotes
         or endnotes part, with its ``part`` name, ``kind`` and ``paragraphs``
-        (their text). The part name works as ``ref`` in :meth:`replace_text`."""
-        return [
-            {"part": part, "kind": kind, "paragraphs": [paragraph_text(p) for p in self._story_paragraphs(kind, root)]}
-            for part, kind, root in self._story_roots()
-        ]
+        (their text; a page number field written by :meth:`set_header` reads
+        as ``{PAGE}`` or ``{NUMPAGES}``). A header or footer also has ``page``:
+        which pages show it (default, first or even). The part name works as
+        ``ref`` in :meth:`replace_text` and the formatting methods."""
+        pages = {}
+        for kind in ("header", "footer"):
+            for reference in self._references(kind):
+                relationship = self.package.relationship(self.package.main_document_part, reference.get(R_ID, ""))
+                if relationship:
+                    pages.setdefault(relationship["target"], reference.get(qn("w:type"), "default"))
+        out = []
+        for part, kind, root in self._story_roots():
+            entry = {"part": part, "kind": kind,
+                     "paragraphs": [self._text_with_fields(p) for p in self._story_paragraphs(kind, root)]}
+            if part in pages:
+                entry["page"] = pages[part]
+            out.append(entry)
+        return out
+
+    @staticmethod
+    def _text_with_fields(p: etree._Element) -> str:
+        """Paragraph text with simple PAGE / NUMPAGES fields shown as tokens."""
+        parts, seen = [], set()
+        for run in iter_runs(p):
+            # The run may sit in a revision mark inside the field.
+            field = next((a for a in run.iterancestors() if a is p or a.tag == FLD_SIMPLE), None)
+            field = field if field is not None and field.tag == FLD_SIMPLE else None
+            name = (field.get(qn("w:instr")) or "").strip().split(" ")[0].upper() if field is not None else ""
+            if name in ("PAGE", "NUMPAGES"):
+                if field not in seen:
+                    seen.add(field)
+                    parts.append("{" + name + "}")
+            else:
+                parts.append(run_text(run))
+        return "".join(parts)
+
+    def _sections(self) -> list[etree._Element]:
+        """The ``w:sectPr`` of every section, in order; the last one is the
+        body's own and is created when the file has none."""
+        if self._body.find(SECTPR) is None:
+            self._body.append(el("w:sectPr"))  # layout, not content
+        return [s for s in self._body.iter(SECTPR) if s.getparent().tag != qn("w:sectPrChange")]
+
+    def _references(self, kind: str) -> list[etree._Element]:
+        return [ref for sect in self._sections() for ref in sect.findall(qn(f"w:{kind}Reference"))]
+
+    def _header_footer_paragraphs(self, kind: str, text: str, alignment: str | None) -> list[etree._Element]:
+        style_id = self._style_id(kind.capitalize())
+        paragraphs = []
+        for line in _lines(text):
+            p = make_paragraph("", style_id)
+            position = 0
+            for token in _FIELD_TOKEN.finditer(line):
+                if token.start() > position:
+                    p.append(make_run(line[position:token.start()]))
+                p.append(el("w:fldSimple", {"w:instr": f" {token.group(1)} "}, make_run("1")))
+                position = token.end()
+            if position < len(line):
+                p.append(make_run(line[position:]))
+            if alignment is not None:
+                styling.apply_paragraph_format(p, alignment=alignment)
+            paragraphs.append(p)
+        return paragraphs
+
+    def _set_header_footer(self, kind: str, text: str, page: str, alignment: str | None) -> str:
+        page = str(page).strip().lower()
+        if page not in _PAGES:
+            raise DocumentError(f"Invalid page {page!r}. Use 'default', 'first' (first page only) or 'even' (even pages).")
+        new = self._header_footer_paragraphs(kind, str(text), alignment)
+        main = self.package.main_document_part
+        parts: list[str] = []
+        used: list[etree._Element] = []
+        for sect in self._sections():
+            for reference in sect.findall(qn(f"w:{kind}Reference")):
+                relationship = self.package.relationship(main, reference.get(R_ID, ""))
+                if reference.get(qn("w:type"), "default") == page and relationship and relationship["target"] in self.package:
+                    used.append(sect)
+                    if relationship["target"] not in parts:
+                        parts.append(relationship["target"])
+        if parts:
+            # Replace what the existing part says (a tracked change when tracking).
+            for index, part in enumerate(parts):
+                root = self.package.xml(part)
+                old = [child for child in root if child.tag in BLOCK_TAGS and not is_deleted_block(child)]
+                for offset, p in enumerate(new if index == 0 else [copy.deepcopy(p) for p in new]):
+                    self.edits.insert_block(root, offset, p)
+                for block in old:
+                    self.edits.delete_block(block)
+        else:
+            tag = "w:hdr" if kind == "header" else "w:ftr"
+            part = self.package.add_part(
+                self.package.next_part_name(self._part_beside_main(kind), ".xml"),
+                f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<{tag} xmlns:w="{W_NS}"/>',
+                _HEADER_FOOTER_TYPES[kind],
+            )
+            root = self.package.xml(part)
+            with self.edits.untracked():  # a new part is not a revision of anything
+                for offset, p in enumerate(new):
+                    self.edits.insert_block(root, offset, p)
+            rel_id = self.package.relate(main, kind, part)
+            first = self._sections()[0]
+            reference = el(f"w:{kind}Reference", {"w:type": page, "r:id": rel_id})
+            first.insert(len([c for c in first if c.tag in (qn("w:headerReference"), qn("w:footerReference"))]), reference)
+            parts, used = [part], [first]
+            self._bind()
+        if page == "first":
+            for sect in used:
+                ensure_child(sect, "w:titlePg", SECTPR_ORDER).attrib.pop(_VAL, None)
+        elif page == "even":
+            settings = self._settings_root()
+            flag = settings.find(qn("w:evenAndOddHeaders"))
+            if flag is None:
+                insert_after_any(settings, el("w:evenAndOddHeaders"), SETTINGS_BEFORE_EVEN_AND_ODD)
+            else:
+                flag.attrib.pop(_VAL, None)
+        return parts[0]
+
+    def _settings_root(self) -> etree._Element:
+        if self.package.settings_part is None:
+            name = self.package.add_part(
+                self._part_beside_main("settings.xml"),
+                f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:settings xmlns:w="{W_NS}"/>', _SETTINGS_TYPE,
+            )
+            self.package.relate(self.package.main_document_part, "settings", name)
+        return self.package.xml(self.package.settings_part)
+
+    def set_header(self, text: str, page: str = "default", alignment: str | None = None) -> str:
+        """Set the text of the page header, creating it when the document has
+        none. Each line of ``text`` is a paragraph; ``{PAGE}`` and
+        ``{NUMPAGES}`` become the page number and page count, and a tab
+        (``\\t``) moves to the centre, then to the right edge. ``page`` is
+        which pages show it: "default" (all, unless the others are set),
+        "first" or "even". Returns the part name, which works as ``ref`` in
+        ``replace_text``, ``format_text`` and ``set_paragraph_format``.
+
+        Replacing an existing header's text is tracked when tracking is on;
+        creating the header is not."""
+        return self._set_header_footer("header", text, page, alignment)
+
+    def set_footer(self, text: str, page: str = "default", alignment: str | None = None) -> str:
+        """Set the text of the page footer; see :meth:`set_header`."""
+        return self._set_header_footer("footer", text, page, alignment)
 
     # ------------------------------------------------------------------ read
 
@@ -322,17 +517,52 @@ class WordDocument:
                 layout["header_rows"] = header_rows
             if tables.table_alignment(tbl):
                 layout["alignment"] = tables.table_alignment(tbl)
+            if tables.table_borders(tbl):
+                layout["borders"] = tables.table_borders(tbl)
+            if tables.table_cell_margins(tbl) is not None:
+                layout["cell_margins_in"] = tables.table_cell_margins(tbl)
             if cells:
                 layout["cells"] = cells
             if layout:
                 info["format"] = layout
         return info
 
-    def _describe(self, element: etree._Element, include_formatting: bool = False, resolve_styles: bool = False) -> dict:
+    def _list_numbers(self) -> dict[etree._Element, int]:
+        """The number each numbered list item of the body shows, counted the
+        way Word does: per list and level, deeper levels starting over under
+        each new item above them."""
+        counters: dict[int, dict[int, int]] = {}
+        shown: dict[etree._Element, int] = {}
+        for block in self._block_elements():
+            item = self._list_item(block)
+            if item is None:
+                continue
+            num_id, level, kind = item
+            levels = counters.setdefault(num_id, {})
+            for deeper in [l for l in levels if l > level]:
+                del levels[deeper]
+            levels[level] = levels[level] + 1 if level in levels else numbering.start_of(self._numbering, num_id, level)
+            if kind == "number":
+                shown[block] = levels[level]
+        return shown
+
+    def _describe(self, element: etree._Element, include_formatting: bool = False, resolve_styles: bool = False,
+                  numbers: dict | None = None) -> dict:
         info: dict = {"id": self._id_of(element), "type": self._type(element)}
         if element.tag == P:
             info["style"] = styling.style_name(self._styles, styling.paragraph_style_id(element))
             info["text"] = paragraph_text(element)
+            item = self._list_item(element)
+            if item is not None:
+                info["list"] = {"kind": item[2], "level": item[1]}
+                if numbers and element in numbers:
+                    info["list"]["number"] = numbers[element]
+            links = self._links(element)
+            if links:
+                info["links"] = links
+            pictures = self._images(element)
+            if pictures:
+                info["images"] = pictures
             if include_formatting:
                 layout = styling.paragraph_format(element)
                 if layout:
@@ -365,8 +595,11 @@ class WordDocument:
                 entry = {"id": info["id"], "type": "table", "preview": preview}
             else:
                 entry = {"id": info["id"], "type": info["type"], "preview": info["text"]}
-                if "style" in info:
-                    entry["style"] = info["style"]
+                for picture in info.get("images", []):
+                    entry["preview"] = f"{entry['preview']} [image: {picture['alt'] or picture['name']}]".strip()
+                for key in ("style", "list"):
+                    if key in info:
+                        entry[key] = info[key]
             entry["preview"] = _truncate(entry["preview"].replace("\n", " "), preview_chars)
             out.append(entry)
         return out
@@ -383,7 +616,11 @@ class WordDocument:
         ``include_formatting`` adds each paragraph's direct formatting:
         ``format`` (alignment, spacing, indents; left out when there is none)
         and ``runs``. ``resolve_styles`` also adds ``style_format``, what the
-        paragraph's style supplies underneath, for rendering a preview.
+        paragraph's style supplies underneath, and the ``number`` each
+        numbered list item shows, for rendering a preview.
+
+        A paragraph also returns ``list`` (kind and nesting level) when it is
+        a list item, ``links`` and ``images`` when it has any.
 
         A table returns ``rows`` (its text on the column grid), ``merged``
         (cells covering more than one position) and ``nested`` (ids of tables
@@ -397,8 +634,9 @@ class WordDocument:
         index = elements.index(self._get(start)) if start else 0
         chunk = elements[index:index + max(count, 0)]
         following = elements[index + len(chunk):index + len(chunk) + 1]
+        numbers = self._list_numbers() if resolve_styles else None
         return {
-            "blocks": [self._describe(e, include_formatting, resolve_styles) for e in chunk],
+            "blocks": [self._describe(e, include_formatting, resolve_styles, numbers) for e in chunk],
             "next": self._id_of(following[0]) if following else None,
             "total_blocks": len(elements),
         }
@@ -466,14 +704,28 @@ class WordDocument:
             self._by_element[moved] = block_id
 
     def _style_id(self, style: str | None, style_type: str = "paragraph") -> str | None:
+        """The id of a style by name or id. A well-known style the file does
+        not define (Heading 4, Caption, List Number...) is added to it."""
         if not style:
             return None
-        return styling.resolve_style(self._styles, style, style_type)
+        return styling.ensure_style(
+            self._styles_root(), style, style_type,
+            lambda kind: numbering.base_num(self._numbering_root(), kind),
+        )
 
-    def insert_paragraph(self, text: str = "", style: str | None = None, after: str = "end") -> str:
+    def insert_paragraph(self, text: str = "", style: str | None = None, after: str = "end",
+                         level: int | None = None) -> str:
         """Insert a paragraph after block ``after`` ("start", "end" or a block id).
-        Returns the new block id. Newlines in ``text`` become line breaks."""
-        return self._insert(make_paragraph(text, self._style_id(style)), after)
+        Returns the new block id. Newlines in ``text`` become line breaks.
+
+        With a list style, ``level`` nests the item (0 is the outer level). A
+        numbered item carries on the numbered list it is placed in or next
+        to; otherwise it starts a new list at 1."""
+        p = make_paragraph(text, self._style_id(style))
+        index = self._index_after(after)
+        self._place_in_list(p, index, level)
+        self.edits.insert_block(self._body, index, p)
+        return self._id_of(p)
 
     def insert_page_break(self, after: str = "end") -> str:
         p = el("w:p", None, el("w:r", None, el("w:br", {"w:type": "page"})))
@@ -554,6 +806,111 @@ class WordDocument:
             raise DocumentError("Column widths must be greater than zero.")
         return twips
 
+    # ----------------------------------------------------------------- lists
+
+    def _list_item(self, p: etree._Element) -> tuple[int, int, str] | None:
+        """``(numbering id, level, kind)`` when the paragraph is a list item,
+        whether its own ``w:numPr`` or its style makes it one."""
+        if p.tag != P:
+            return None
+        num_id, level = numbering.num_pr(p)
+        if num_id is None or level is None:
+            style_num, style_level = styling.style_num_pr(self._styles, styling.paragraph_style_id(p))
+            num_id = style_num if num_id is None else num_id
+            level = style_level if level is None else level
+        kind = numbering.kind_of(self._numbering, num_id, level or 0)
+        return (num_id, level or 0, kind) if num_id and kind else None
+
+    def _check_level(self, num_id: int, level: int) -> int:
+        try:
+            level = int(level)
+        except (TypeError, ValueError):
+            raise DocumentError("level must be a whole number: 0 for the outer level, 1 for the first nested level.") from None
+        levels = numbering.level_count(numbering.abstract_of(self._numbering, num_id))
+        if not 0 <= level < max(levels, 1):
+            raise DocumentError(f"level must be between 0 and {max(levels, 1) - 1} for this list.")
+        return level
+
+    def _place_in_list(self, p: etree._Element, index: int, level: int | None) -> None:
+        """Before a new paragraph goes into the body at ``index``: set its
+        list level, and decide which numbered list it belongs to."""
+        item = self._list_item(p)
+        if item is None:
+            if level:
+                raise DocumentError(
+                    "level only applies to list items. Give the paragraph a list style such as "
+                    "'List Bullet' or 'List Number'."
+                )
+            return
+        num_id, own_level, kind = item
+        level = own_level if level is None else self._check_level(num_id, level)
+        target = num_id
+        if kind == "number":
+            target = self._neighbouring_list(index)
+            if target is None:
+                root = self._numbering_root()
+                target = numbering.new_num(root, numbering.abstract_id_of(root, num_id), start=1)
+        if (target, level) != (num_id, own_level):
+            numbering.set_num_pr(p, target, level)
+
+    def _neighbouring_list(self, index: int) -> int | None:
+        """The numbered list a paragraph placed at body position ``index``
+        joins: that of the nearest numbered item in the run of list items
+        just before it, or failing that just after it."""
+        live = [child for child in self._body if child.tag in BLOCK_TAGS and not is_deleted_block(child)]
+        before = [child for child in live if self._body.index(child) < index]
+        after = [child for child in live if self._body.index(child) >= index]
+        for run in (reversed(before), after):
+            for block in run:
+                item = self._list_item(block)
+                if item is None:
+                    break
+                if item[2] == "number":
+                    return item[0]
+        return None
+
+    def set_list_level(self, ref: str, level: int) -> int:
+        """Nest list items: ``level`` 0 is the outer level, 1 the first
+        nested level, up to 8. ``ref`` is a block id or a table cell. Returns
+        the number of paragraphs changed."""
+        changed = 0
+        for p in self._paragraphs_for(ref):
+            item = self._list_item(p)
+            if item is None:
+                raise DocumentError(
+                    f"{ref} is not a list item. Give it a list style first with set_paragraph_style "
+                    "('List Bullet' or 'List Number')."
+                )
+            wanted = self._check_level(item[0], level)
+            if wanted != item[1]:
+                self.edits.before_paragraph_format(p)
+                numbering.set_num_pr(p, item[0], wanted)
+                changed += 1
+        return changed
+
+    def restart_numbering(self, block_id: str, start: int = 1) -> int:
+        """Make a numbered list item begin a new count at ``start``. The
+        items of the same list that come after it follow on from there.
+        Returns the number of paragraphs renumbered."""
+        first = self._paragraph(block_id)
+        item = self._list_item(first)
+        if item is None or item[2] != "number":
+            raise DocumentError(f"Block {block_id} is not a numbered list item, so there is no numbering to restart.")
+        if int(start) < 0:
+            raise DocumentError("start must be 0 or more.")
+        num_id, level, _ = item
+        root = self._numbering_root()
+        fresh = numbering.new_num(root, numbering.abstract_id_of(root, num_id), start=int(start), level=level)
+        changed, reached = 0, False
+        for p in _live_paragraphs(self._body):
+            reached = reached or p is first
+            current = self._list_item(p) if reached else None
+            if current is not None and current[0] == num_id:
+                self.edits.before_paragraph_format(p)
+                numbering.set_num_pr(p, fresh, current[1])
+                changed += 1
+        return changed
+
     # ---------------------------------------------------------------- update
 
     def _replace_range(self, p: etree._Element, start: int, end: int, text: str) -> None:
@@ -611,7 +968,9 @@ class WordDocument:
         runs = list(iter_runs(p))
         rpr = next((r.find(RPR) for r in runs if run_text(r) and r.find(RPR) is not None), None)
         for run in runs:
-            self.edits.delete_run(run)
+            # A run holding a picture, a field or a note reference is not text: it stays.
+            if all(child.tag in _TEXT_CHILDREN for child in run):
+                self.edits.delete_run(run)
         if text:
             self.edits.insert_run(p, len(p), make_run(text, rpr))
 
@@ -765,6 +1124,7 @@ class WordDocument:
         to right; a cell merged with the rows above and below is skipped.
         Returns the index of the new row."""
         tbl = self._table(table_id)
+        self._modernise_merges(tbl)
         grid = tables.build_grid(tbl)
         rows = grid.rows
         if not rows:
@@ -851,6 +1211,7 @@ class WordDocument:
         (when changes are tracked, the other columns are left as they are).
         Returns the index of the new column."""
         tbl = self._table(table_id)
+        self._modernise_merges(tbl)
         grid = tables.build_grid(tbl)
         if not grid.rows or not grid.width:
             raise DocumentError("Table has no cells to copy the layout from.")
@@ -910,6 +1271,7 @@ class WordDocument:
         """Delete the column at grid position ``col``. A merged cell that
         spans it loses one column and keeps its content."""
         tbl = self._table(table_id)
+        self._modernise_merges(tbl)
         grid = tables.build_grid(tbl)
         if not 0 <= col < grid.width:
             raise DocumentError(f"Column {col} is out of range; the table has {grid.width} columns (zero-based).")
@@ -944,6 +1306,31 @@ class WordDocument:
             tables.scale_grid(tbl, total)
             self._sync_cell_widths(tbl)
 
+    def _modernise_merges(self, tbl: etree._Element) -> None:
+        """Rewrite legacy horizontal merges (``w:hMerge``, one cell per
+        column) as spans (``w:gridSpan``, one cell) before the table's
+        structure is edited. The two say the same thing, so this is not a
+        tracked change."""
+        runs = tables.h_merge_runs(tbl)
+        if not runs:
+            return
+        with self.edits.untracked():
+            for first, swallowed in runs:
+                if first is None:
+                    for tc in swallowed:
+                        tables.clear_h_merge(tc)
+                    continue
+                columns = tables.span(first) + sum(tables.span(tc) for tc in swallowed)
+                widths = [tables.cell_width(tc) for tc in [first, *swallowed]]
+                for tc in swallowed:
+                    for child in [c for c in tc if c.tag == TBL or (c.tag == P and paragraph_text(c))]:
+                        self.edits.move_block(child, first, len(first))
+                    self.edits.delete_cell(tc)
+                tables.clear_h_merge(first)
+                tables.set_span(first, columns)
+                if all(w is not None and w[1] == "dxa" for w in widths):
+                    tables.set_cell_width(first, sum(w[0] for w in widths))
+
     def _no_tracked_merge(self) -> None:
         if self.edits.tracking:
             raise DocumentError(
@@ -956,6 +1343,7 @@ class WordDocument:
         both included, into one cell. The text of all of them is kept, in
         reading order. Not available while changes are tracked."""
         tbl = self._table(table_id)
+        self._modernise_merges(tbl)
         self._no_tracked_merge()
         grid = tables.build_grid(tbl)
         (r0, r1), (c0, c1) = sorted((row, end_row)), sorted((col, end_col))
@@ -1012,6 +1400,7 @@ class WordDocument:
         Its content stays in the top-left one. Not available while changes
         are tracked."""
         tbl = self._table(table_id)
+        self._modernise_merges(tbl)
         self._no_tracked_merge()
         slot = self._position(tables.build_grid(tbl), row, col).slot
         if not slot.merged:
@@ -1028,15 +1417,38 @@ class WordDocument:
                 width = widths[start + offset] if start + offset < len(widths) else None
                 self.edits.insert_cell(parent, parent.index(own) + offset, self._new_cell(own, "", width))
 
-    def format_cells(self, ref: str, shading: str | None = None, vertical_align: str | None = None) -> int:
+    def format_cells(
+        self,
+        ref: str,
+        shading: str | None = None,
+        vertical_align: str | None = None,
+        border: str | None = None,
+        border_sides: list[str] | str | None = None,
+        border_color: str | None = None,
+        border_width_pt: float | None = None,
+        margins_in: float | None = None,
+        text_direction: str | None = None,
+    ) -> int:
         """Format table cells. ``ref`` is a cell (``b3[0,1]``), a row
         (``b3[0,*]``), a column (``b3[*,1]``) or a table id for every cell.
+
         ``shading`` is a background color (hex or a basic color name, "none"
-        to clear); ``vertical_align`` is top, center or bottom. Returns the
-        number of cells formatted. For the text itself use ``format_text``
-        and ``set_paragraph_format`` with the same ``ref``."""
-        if shading is None and vertical_align is None:
-            raise DocumentError("Give at least one cell property (shading, vertical_align).")
+        to clear); ``vertical_align`` is top, center or bottom. ``border`` is
+        a line style (single, double, dashed, dotted, thick, or none to remove
+        the line) drawn on ``border_sides``: any of top, bottom, left, right,
+        all (the default), outer (the outline of the referenced cells taken
+        together) and inner (the lines between them), in ``border_color``
+        and ``border_width_pt``. ``margins_in`` is the padding inside the
+        cell and ``text_direction`` is horizontal, vertical or vertical_up.
+
+        Returns the number of cells formatted. For the text itself use
+        ``format_text`` and ``set_paragraph_format`` with the same ``ref``."""
+        if border is None and (border_sides is not None or border_color is not None or border_width_pt is not None):
+            border = "single"
+        if all(v is None for v in (shading, vertical_align, border, margins_in, text_direction)):
+            raise DocumentError(
+                "Give at least one cell property (shading, vertical_align, border, margins_in, text_direction)."
+            )
         element, cell = self._parse_ref(ref)
         if element.tag != TBL:
             raise DocumentError(f"{ref} is a {self._type(element)}; cell formatting needs a table or a table cell.")
@@ -1048,12 +1460,89 @@ class WordDocument:
             align = _VERTICAL.get(str(vertical_align).strip().lower())
             if align is None:
                 raise DocumentError(f"Invalid vertical_align {vertical_align!r}. Use 'top', 'center' or 'bottom'.")
+        line = self._border_spec(border, border_sides, border_color, border_width_pt) if border is not None else None
+        padding = None
+        if margins_in is not None:
+            try:
+                padding = round(float(margins_in) * tables.TWIPS_PER_INCH)
+            except (TypeError, ValueError):
+                padding = -1
+            if not 0 <= padding <= tables.TWIPS_PER_INCH:
+                raise DocumentError("margins_in is the padding inside a cell in inches, between 0 and 1.")
+        direction = None
+        if text_direction is not None:
+            direction = str(text_direction).strip().lower().replace("-", "_").replace(" ", "_")
+            if direction not in tables.TEXT_DIRECTIONS:
+                raise DocumentError(f"Invalid text_direction {text_direction!r}. Use 'horizontal', 'vertical' or 'vertical_up'.")
+
+        grid = self._grid(element)
         slots = self._slots(element, *(cell or (None, None)))
         for slot in slots:
             for tc in slot.members:
                 self.edits.before_cell_format(tc)
                 tables.apply_cell_format(tc, fill, align)
+                if padding is not None:
+                    tables.set_cell_margins(tc, padding)
+                if direction is not None:
+                    tables.set_text_direction(tc, direction)
+        if line is not None:
+            self._draw_borders(grid, slots, *line)
         return len(slots)
+
+    @staticmethod
+    def _border_spec(border, sides, color, width_pt) -> tuple[str, set[str], int, str]:
+        style = str(border).strip().lower()
+        if style not in tables.BORDER_STYLES:
+            raise DocumentError(f"Invalid border {border!r}. Use one of: {', '.join(tables.BORDER_STYLES)}.")
+        wanted = {str(s).strip().lower() for s in ([sides] if isinstance(sides, str) else sides or ["all"])}
+        allowed = {*tables.SIDES, "all", "outer", "inner"}
+        if not wanted or wanted - allowed:
+            raise DocumentError(f"Invalid border_sides {sides!r}. Use any of: {', '.join(sorted(allowed))}.")
+        try:
+            size = round(float(width_pt) * 8) if width_pt is not None else 4
+        except (TypeError, ValueError):
+            size = 0
+        if not 2 <= size <= 48:
+            raise DocumentError("border_width_pt must be between 0.25 and 6 points.")
+        return style, wanted, size, styling.normalize_color(color) if color else "auto"
+
+    def _draw_borders(self, grid: tables.Grid, slots: list[tables.Slot], style: str, sides: set[str],
+                      size: int, color: str) -> None:
+        """Set cell borders. An edge between two cells belongs to both, and
+        Word shows whichever it prefers, so the neighbour's facing edge is
+        set as well."""
+        chosen = {(slot.row, slot.col) for slot in slots}  # slots may come from another reading of the grid
+
+        def beside(slot: tables.Slot, side: str) -> list[tables.Slot | None]:
+            rows = range(slot.row, slot.row + slot.rowspan)
+            cols = range(slot.col, slot.col + slot.colspan)
+            cells = {
+                "top": [(slot.row - 1, c) for c in cols], "bottom": [(slot.row + slot.rowspan, c) for c in cols],
+                "left": [(r, slot.col - 1) for r in rows], "right": [(r, slot.col + slot.colspan) for r in rows],
+            }[side]
+            return [position.slot if position else None for position in (grid.at(r, c) for r, c in cells)]
+
+        def edge_cells(slot: tables.Slot, side: str) -> list[etree._Element]:
+            return {"top": slot.members[:1], "bottom": slot.members[-1:]}.get(side, slot.members)
+
+        def within(inner: tables.Slot, outer: tables.Slot, side: str) -> bool:
+            if side in ("top", "bottom"):
+                return outer.col <= inner.col and inner.col + inner.colspan <= outer.col + outer.colspan
+            return outer.row <= inner.row and inner.row + inner.rowspan <= outer.row + outer.rowspan
+
+        for slot in slots:
+            for side in tables.SIDES:
+                near = beside(slot, side)
+                inside = all(n is not None and (n.row, n.col) in chosen for n in near)
+                if not ("all" in sides or side in sides or ("inner" if inside else "outer") in sides):
+                    continue
+                targets = [(tc, side) for tc in edge_cells(slot, side)]
+                for neighbour in dict.fromkeys(n for n in near if n is not None):
+                    if within(neighbour, slot, side):
+                        targets += [(tc, tables.OPPOSITE[side]) for tc in edge_cells(neighbour, tables.OPPOSITE[side])]
+                for tc, edge in targets:
+                    self.edits.before_cell_format(tc)
+                    tables.set_cell_border(tc, edge, style, size, color)
 
     def set_table_format(
         self,
@@ -1061,14 +1550,32 @@ class WordDocument:
         column_widths_in: list[float] | None = None,
         header_rows: int | None = None,
         alignment: str | None = None,
+        borders: str | None = None,
+        cell_margins_in: float | None = None,
     ) -> None:
         """Lay out a table. ``column_widths_in`` sets every column's width in
         inches and fixes the layout so Word keeps them; ``header_rows`` is how
         many rows at the top repeat on each page the table runs onto (0 for
-        none); ``alignment`` places the table left, center or right."""
+        none); ``alignment`` places the table left, center or right.
+        ``borders`` draws the table's lines: all, none, outer (a box) or
+        horizontal (rules between rows, no vertical lines); borders set on
+        single cells with ``format_cells`` still show. ``cell_margins_in`` is
+        the padding inside every cell."""
         tbl = self._table(table_id)
-        if column_widths_in is None and header_rows is None and alignment is None:
-            raise DocumentError("Give at least one table property (column_widths_in, header_rows, alignment).")
+        if all(v is None for v in (column_widths_in, header_rows, alignment, borders, cell_margins_in)):
+            raise DocumentError(
+                "Give at least one table property (column_widths_in, header_rows, alignment, borders, cell_margins_in)."
+            )
+        if borders is not None and str(borders).strip().lower() not in tables.BORDER_PRESETS:
+            raise DocumentError(f"Invalid borders {borders!r}. Use one of: {', '.join(tables.BORDER_PRESETS)}.")
+        padding = None
+        if cell_margins_in is not None:
+            try:
+                padding = round(float(cell_margins_in) * tables.TWIPS_PER_INCH)
+            except (TypeError, ValueError):
+                padding = -1
+            if not 0 <= padding <= tables.TWIPS_PER_INCH:
+                raise DocumentError("cell_margins_in is the padding inside the cells in inches, between 0 and 1.")
         grid = tables.build_grid(tbl)
         if alignment is not None and str(alignment).strip().lower() not in _TABLE_ALIGNMENTS:
             raise DocumentError(f"Invalid alignment {alignment!r}. Use 'left', 'center' or 'right'.")
@@ -1076,8 +1583,12 @@ class WordDocument:
             raise DocumentError(f"header_rows must be between 0 and {len(grid.rows)}, the number of rows.")
         twips = self._twips(column_widths_in, grid.width) if column_widths_in is not None else None
 
-        if twips is not None or alignment is not None:
+        if twips is not None or alignment is not None or borders is not None or padding is not None:
             self.edits.before_table_format(tbl)
+        if borders is not None:
+            tables.set_table_borders(tbl, str(borders).strip().lower())
+        if padding is not None:
+            tables.set_table_cell_margins(tbl, padding)
         if twips is not None:
             widths = tables.grid_widths(tbl)
             for col, width in enumerate(twips):
@@ -1113,10 +1624,30 @@ class WordDocument:
         styles = styling.list_styles(self._styles)
         return [s for s in styles if style_type is None or s["type"] == style_type]
 
+    def create_style(self, name: str, based_on: str | None = "Normal", style_type: str = "paragraph", **fmt) -> str:
+        """Define a new paragraph or character style and return its name.
+        ``based_on`` is the style it inherits from (the document's default
+        when None or missing). ``fmt`` takes the keywords of
+        ``styling.apply_run_format`` and, for a paragraph style,
+        ``styling.apply_paragraph_format``. Style definitions are not tracked
+        changes; applying the style to text is."""
+        root = self._styles_root()
+        based_on_id = None
+        if based_on:
+            try:
+                based_on_id = self._style_id(based_on, style_type)
+            except styling.StyleError:
+                if styling._key(based_on) != "normal":
+                    raise
+        if based_on_id is None:
+            based_on_id = styling.default_style_id(root, style_type)
+        style_id = styling.create_style(root, name, style_type, based_on_id, **fmt)
+        return styling.style_name(root, style_id, style_type)
+
     def set_paragraph_style(self, ref: str, style: str) -> int:
         """Apply a paragraph style by name or id. Returns the number of
         paragraphs whose style actually changed."""
-        style_id = styling.resolve_style(self._styles, style, "paragraph")
+        style_id = self._style_id(style)
         changed = 0
         for p in self._paragraphs_for(ref):
             if styling.paragraph_style_id(p) != style_id:
@@ -1161,6 +1692,229 @@ class WordDocument:
             self.edits.before_paragraph_format(p)
             styling.apply_paragraph_format(p, **fmt)
         return len(paragraphs)
+
+    # ---------------------------------------------------------------- images
+
+    def _images(self, p: etree._Element) -> list[dict]:
+        """The pictures in a paragraph as ``{"name", "alt", "width_in", "height_in"}``."""
+        out = []
+        for run in iter_runs(p):
+            for node in run.iter(DRAWING):
+                info = images.describe(node)
+                rel_id = info.pop("rel_id")
+                relationship = self.package.relationship(self._part_of(p), rel_id) if rel_id else None
+                out.append({"name": relationship["target"].rpartition("/")[2] if relationship else "", **info})
+        return out
+
+    def _text_width_in(self) -> float:
+        """Width between the page margins, from the section properties."""
+        sect = self._body.find(SECTPR)
+        size = sect.find(qn("w:pgSz")) if sect is not None else None
+        margins = sect.find(qn("w:pgMar")) if sect is not None else None
+        try:
+            twips = int(size.get(qn("w:w"))) - int(margins.get(qn("w:left"))) - int(margins.get(qn("w:right")))
+        except (AttributeError, TypeError, ValueError):
+            twips = PAGE_WIDTH_TWIPS
+        return (twips if twips > 0 else PAGE_WIDTH_TWIPS) / tables.TWIPS_PER_INCH
+
+    @staticmethod
+    def _image_size(natural: tuple[float, float], width_in: float | None, height_in: float | None,
+                    fit_width: float | None = None) -> tuple[float, float]:
+        try:
+            width = float(width_in) if width_in is not None else None
+            height = float(height_in) if height_in is not None else None
+        except (TypeError, ValueError):
+            raise DocumentError("width_in and height_in must be numbers, in inches.") from None
+        ratio = natural[1] / natural[0]
+        if width is None and height is None:
+            width, height = natural
+            if fit_width and width > fit_width:
+                width, height = fit_width, fit_width * ratio
+        elif height is None:
+            height = width * ratio
+        elif width is None:
+            width = height / ratio
+        if not (0 < width <= 22 and 0 < height <= 22):
+            raise DocumentError("An image must be more than 0 and at most 22 inches wide and high.")
+        return width, height
+
+    def insert_image(
+        self,
+        source: str | os.PathLike | bytes,
+        after: str = "end",
+        width_in: float | None = None,
+        height_in: float | None = None,
+        alt_text: str = "",
+        alignment: str | None = None,
+    ) -> str:
+        """Insert a picture (PNG, JPEG or GIF) in a paragraph of its own after
+        block ``after``. ``source`` is a file path or the image bytes. With
+        one of ``width_in`` / ``height_in`` the other keeps the proportions;
+        with neither the picture has its natural size, reduced to fit between
+        the margins. ``alt_text`` describes it for screen readers. Returns
+        the new block id."""
+        if isinstance(source, (bytes, bytearray)):
+            data, filename = bytes(source), "image"
+        else:
+            try:
+                data, filename = Path(source).read_bytes(), Path(source).name
+            except OSError as exc:
+                raise DocumentError(f"Cannot read the image file {str(source)!r}: {exc.strerror or exc}.") from None
+        try:
+            info = images.probe(data)
+        except images.ImageError as exc:
+            raise DocumentError(str(exc)) from None
+        width, height = self._image_size(info.size_in, width_in, height_in, self._text_width_in())
+        index = self._index_after(after)
+
+        main = self.package.main_document_part
+        media = self._part_beside_main("media/image")
+        part = next(
+            (name for name in self.package.list_parts()
+             if name.startswith(media) and name.endswith("." + info.format) and self.package.part_bytes(name) == data),
+            None,
+        )
+        if part is None:  # the same picture used twice is stored once
+            part = self.package.add_part(self.package.next_part_name(media, "." + info.format), data,
+                                         images.CONTENT_TYPES[info.format])
+        rel_id = self.package.relate(main, "image", part)
+        number = images.next_number(self.package.xml(main), *(root for _, _, root in self._story_roots()))
+        p = el("w:p", None, el("w:r", None, images.drawing(rel_id, width, height, number, filename, str(alt_text or ""))))
+        if alignment is not None:
+            styling.apply_paragraph_format(p, alignment=alignment)
+        self.edits.insert_block(self._body, index, p)
+        return self._id_of(p)
+
+    def set_image(self, block_id: str, width_in: float | None = None, height_in: float | None = None,
+                  alt_text: str | None = None) -> None:
+        """Resize the picture in a block (giving one dimension keeps the
+        proportions) or change its alt text. Not recorded as a tracked change."""
+        if width_in is None and height_in is None and alt_text is None:
+            raise DocumentError("Give at least one of width_in, height_in, alt_text.")
+        element = self._get(block_id)
+        node = next((d for p in _live_paragraphs(element) for run in iter_runs(p) for d in run.iter(DRAWING)), None)
+        if node is None:
+            raise DocumentError(f"Block {block_id} has no picture.")
+        current = images.describe(node)
+        if width_in is not None or height_in is not None:
+            if "width_in" not in current:
+                raise DocumentError(f"The picture in {block_id} has no readable size, so it cannot be resized.")
+            images.resize(node, *self._image_size((current["width_in"], current["height_in"]), width_in, height_in))
+        if alt_text is not None:
+            images.set_alt_text(node, str(alt_text))
+
+    # ------------------------------------------------------------ hyperlinks
+
+    def _part_of(self, element: etree._Element) -> str:
+        """Name of the part ``element`` is in: the main document, or a header,
+        footer or notes part. Relationships are kept per part."""
+        root = element.getroottree().getroot()
+        for part, _, story in self._story_roots():
+            if story is root:
+                return part
+        return self.package.main_document_part
+
+    @staticmethod
+    def _link_of(run: etree._Element, p: etree._Element) -> etree._Element | None:
+        """The hyperlink of paragraph ``p`` that ``run`` is inside."""
+        for ancestor in run.iterancestors():
+            if ancestor is p:
+                return None
+            if ancestor.tag == HYPERLINK:
+                return ancestor
+        return None
+
+    def _links(self, p: etree._Element) -> list[dict]:
+        """The hyperlinks in a paragraph as ``{"text", "url"}``; a link to a
+        bookmark in the document reads as ``#name``."""
+        found: dict[etree._Element, str] = {}
+        for run in iter_runs(p):
+            link = self._link_of(run, p)
+            if link is not None:
+                found[link] = found.get(link, "") + run_text(run)
+        out = []
+        for link, text in found.items():
+            relationship = self.package.relationship(self._part_of(p), link.get(R_ID, "")) if link.get(R_ID) else None
+            url = relationship["target"] if relationship else "#" + link.get(qn("w:anchor"), "")
+            if text:
+                out.append({"text": text, "url": url})
+        return out
+
+    @staticmethod
+    def _check_url(url: str) -> str:
+        url = str(url).strip()
+        scheme, _, rest = url.partition(":")
+        ok = scheme.lower() in _URL_SCHEMES and rest and not any(ch.isspace() or ord(ch) < 0x20 for ch in url)
+        if ok and scheme.lower() != "mailto":
+            ok = rest.startswith("//") and len(rest) > 2
+        if not ok:
+            raise DocumentError(
+                f"Invalid link address {url!r}. Give a full address starting with https://, http:// or mailto:."
+            )
+        return url
+
+    def add_hyperlink(self, ref: str, url: str, match: str | None = None, case_sensitive: bool = True) -> int:
+        """Turn text into a link to ``url`` (https, http or mailto): the whole
+        text of ``ref`` (a block, table cell or header/footer part), or only
+        the occurrences of ``match`` in it. Text that is already a link is
+        pointed at ``url``. Returns the number of links made.
+
+        When changes are tracked, the text is recorded as replaced by its
+        linked copy; re-pointing an existing link is not recorded."""
+        url = self._check_url(url)
+        style_id = self._style_id("Hyperlink", "character")
+        count = 0
+        for p in self._paragraphs_for(ref):
+            text = paragraph_text(p)
+            if match:
+                pattern = re.compile(re.escape(match), 0 if case_sensitive else re.IGNORECASE)
+                spans = [(m.start(), m.end()) for m in pattern.finditer(text)]
+            else:
+                spans = [(0, len(text))] if text else []
+            if not spans:
+                continue
+            rel_id = self.package.relate(self._part_of(p), "hyperlink", url, external=True)
+            for start, end in reversed(spans):
+                runs = isolate_range(p, start, end)
+                existing = {run: self._link_of(run, p) for run in runs}
+                for link in {link for link in existing.values() if link is not None}:
+                    link.set(R_ID, rel_id)
+                    link.attrib.pop(qn("w:anchor"), None)
+                free = [run for run in runs if existing[run] is None]
+                for wrapper in self.edits.wrap_runs(free, el("w:hyperlink", {"r:id": rel_id, "w:history": "1"})):
+                    for run in wrapper.iter(R):
+                        if run.getparent().tag not in (DEL, MOVE_FROM):
+                            self.edits.before_run_format(run)
+                            ensure_child(get_or_add_rpr(run), "w:rStyle", RPR_ORDER).set(_VAL, style_id)
+                count += 1
+        if count == 0:
+            raise DocumentError(f"Text {match!r} was not found in {ref}." if match else f"{ref} has no text to link.")
+        return count
+
+    def remove_hyperlink(self, ref: str, match: str | None = None) -> int:
+        """Turn links back into plain text: every link in ``ref``, or only
+        those whose text contains ``match``. Returns the number removed."""
+        style_id = styling._find_style(self._styles, "Hyperlink", "character")
+        count = 0
+        for p in self._paragraphs_for(ref):
+            texts: dict[etree._Element, str] = {}
+            for run in iter_runs(p):
+                link = self._link_of(run, p)
+                if link is not None:
+                    texts[link] = texts.get(link, "") + run_text(run)
+            for link, text in texts.items():
+                if match and match not in text:
+                    continue
+                for run in self.edits.unwrap_runs(link):
+                    rpr = run.find(RPR)
+                    style = rpr.find(qn("w:rStyle")) if rpr is not None else None
+                    if style is not None and style.get(_VAL) == style_id:
+                        self.edits.before_run_format(run)
+                        rpr.remove(style)
+                count += 1
+        if count == 0:
+            raise DocumentError(f"No link{f' containing {match!r}' if match else ''} was found in {ref}.")
+        return count
 
     # ------------------------------------------------------------- revisions
 
@@ -1276,9 +2030,12 @@ class WordDocument:
         # Text first, then paragraph marks, rows and cells: a paragraph whose
         # inserted text was rejected is empty by the time its mark is, and
         # goes entirely.
+        links = {node.getparent() for node in nodes if node.getparent().tag == HYPERLINK}
         for node in sorted(nodes, key=is_mark):
             if any(ancestor is root for ancestor in node.iterancestors() for root in roots):
                 self.edits.resolve(node, accept)
+        for link in links:
+            self.edits.remove_if_empty(link)  # a link whose text was rejected or deleted
         for table, columns in emptied.items():
             spare = len(tables.grid_cols(table)) - tables.physical_width(table)
             for column in sorted(columns, reverse=True)[:max(spare, 0)]:

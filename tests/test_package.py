@@ -95,3 +95,45 @@ def test_write_xml_validates_and_only_existing_parts():
         package.write_xml("word/new.xml", "<a/>")
     package.write_xml("word/settings.xml", f"<w:settings {W}/>")
     assert "w:settings" in package.read_xml("word/settings.xml")
+
+
+def test_add_part_registers_content_type_and_relationship(tmp_path):
+    package = WordPackage.open()
+    main = package.main_document_part
+    name = package.next_part_name("word/media/image", ".png")
+    assert name == "word/media/image1.png"
+    package.add_part(name, b"\x89PNG fake", "image/png")
+    rel_id = package.relate(main, "image", name)
+    assert package.relate(main, "image", name) == rel_id  # reused, not duplicated
+    link = package.relate(main, "hyperlink", "https://example.com/a?b=1&c=2", external=True)
+    assert link != rel_id
+    assert package.next_part_name("word/media/image", ".png") == "word/media/image2.png"
+    with pytest.raises(PackageError):
+        package.add_part(name, b"again", "image/png")
+    with pytest.raises(PackageError):
+        package.add_part("../evil.xml", b"<a/>", "application/xml")
+
+    again = WordPackage.from_bytes(package.to_bytes())
+    assert again.part_bytes(name) == b"\x89PNG fake"
+    assert again.related_parts("image") == [name]
+    assert again.relationship(main, link) == {
+        "id": link, "type": again.relationships()[-1]["type"], "target": "https://example.com/a?b=1&c=2", "external": True,
+    }
+    types = again.read_xml("[Content_Types].xml")
+    assert 'Extension="png"' in types and types.count("image/png") == 1
+    assert again.styles_part == "word/styles.xml" and again.numbering_part == "word/numbering.xml"
+
+
+def test_relate_creates_the_rels_part_of_a_new_xml_part():
+    package = WordPackage.open()
+    header = package.add_part(
+        "word/header1.xml", f"<w:hdr {W}><w:p/></w:hdr>",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml",
+    )
+    package.relate(package.main_document_part, "header", header)
+    package.relate(header, "hyperlink", "https://example.com", external=True)
+    again = WordPackage.from_bytes(package.to_bytes())
+    assert again.related_parts("header") == [header]
+    assert "word/_rels/header1.xml.rels" in again.list_parts()
+    assert again.relationships(header)[0]["external"]
+    assert 'PartName="/word/header1.xml"' in again.read_xml("[Content_Types].xml")
