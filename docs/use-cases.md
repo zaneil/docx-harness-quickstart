@@ -85,8 +85,8 @@ The agent inspects the document using read-only tools, proposes a plan, and asks
 
 ## Check the capabilities before integrating
 
-The built-in semantic tools edit body paragraphs, tables, and formatting. Other document parts, including headers, images, and comments, are preserved on round trip but have no semantic editing tools. Advanced raw XML tools are opt-in.
+The built-in semantic tools edit body paragraphs, tables, formatting, lists, hyperlinks, inline pictures, and headers and footers, and can record edits as tracked changes. Comments and content controls are preserved on round trip but have no semantic editing tools. Advanced raw XML tools are opt-in.
 
-Writing tracked changes is not implemented. This project has no PDF renderer or page-layout engine and cannot verify pagination. Legacy `.doc` files are unsupported. See the full [scope and limitations](../README.md#scope-and-limitations).
+This project has no PDF renderer or page-layout engine and cannot verify pagination. Legacy `.doc` files are unsupported. See the full [scope and limitations](../README.md#scope-and-limitations).
 
 For extending the source, read [AGENTS.md](../AGENTS.md) for setup commands, implementation entry points, and document-validity rules.

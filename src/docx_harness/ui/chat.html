@@ -60,6 +60,8 @@
   #page .h1 { font-size: 16pt; } #page .h2 { font-size: 13pt; } #page .h3 { font-size: 12pt; color: #1f3763; }
   #page .li { padding-left: 36px; position: relative; margin-bottom: 3pt; }
   #page .li::before { content: attr(data-marker); position: absolute; left: 14px; }
+  #page .image { display: inline-flex; align-items: center; justify-content: center; max-width: 100%; box-sizing: border-box;
+    border: 1px dashed #b5b5b5; border-radius: 4px; background: #f6f6f6; color: #666; font-size: 9pt; vertical-align: top; overflow: hidden; }
   #page .quote { font-style: italic; color: #404040; text-align: center; margin: 10pt 43px; }
   #page table { border-collapse: collapse; width: 100%; margin: 0 0 8pt; }
   #page td { border: 1px solid #555; padding: 3px 7px; vertical-align: top; white-space: pre-wrap; }
@@ -201,6 +203,15 @@ function runs(target, block) {
     if (run.highlight) span.style.background = { darkBlue: "navy", darkGray: "gray", lightGray: "lightgray" }[run.highlight] || run.highlight;
     target.appendChild(span);
   }
+  for (const image of block.images || []) {
+    // The picture itself is not sent to the page: a box of its size stands in for it.
+    const box = document.createElement("span");
+    box.className = "image";
+    box.style.width = Math.min(image.width_in || 2, 6.5) + "in";
+    box.style.height = (image.height_in || 1) * Math.min(1, 6.5 / (image.width_in || 2)) + "in";
+    box.textContent = "🖼 " + (image.alt || image.name || "image");
+    target.appendChild(box);
+  }
   if (!target.textContent) target.appendChild(document.createElement("br"));
 }
 
@@ -237,7 +248,6 @@ function render(state) {
     const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "Empty document";
     page.appendChild(empty);
   }
-  let number = 0;
   for (const block of state.blocks) {
     const id = document.createElement("span"); id.className = "id"; id.textContent = block.id;
     let el;
@@ -266,9 +276,13 @@ function render(state) {
       el = document.createElement("div");
       const heading = style.match(/^heading ([1-3])$/);
       el.className = "blk " + (heading ? "h" + heading[1] : style === "title" ? "title" : style === "subtitle" ? "subtitle"
-        : style === "quote" ? "quote" : style.startsWith("list") ? "li" : "");
-      if (style.startsWith("list")) el.dataset.marker = style.includes("number") ? (++number) + "." : "•";
-      layout(el, block, style.startsWith("list"));
+        : style === "quote" ? "quote" : block.list ? "li" : "");
+      if (block.list) {
+        const level = block.list.level || 0;
+        el.dataset.marker = block.list.kind === "number" ? (block.list.number || 1) + "." : "•○▪"[level % 3];
+        if (level) el.style.marginLeft = level * 24 + "px";
+      }
+      layout(el, block, !!block.list);
       el.appendChild(id);
       runs(el, block);
     }

@@ -22,6 +22,9 @@ CONTENT_TYPES = "[Content_Types].xml"
 ROOT_RELS = "_rels/.rels"
 DEFAULT_MAIN_PART = "word/document.xml"
 PKG_RELS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
+RELS_CONTENT_TYPE = "application/vnd.openxmlformats-package.relationships+xml"
+_RELATIONSHIP = f"{{{PKG_RELS_NS}}}Relationship"
 OFFICE_DOCUMENT_REL = R_NS + "/officeDocument"
 
 MAX_ENTRIES = 5_000
@@ -148,29 +151,138 @@ class WordPackage:
         name = f"{folder}/settings.xml" if folder else "settings.xml"
         return name if name in self._parts else None
 
-    def related_parts(self, kind: str) -> list[str]:
-        """Parts the main document part points to with a relationship whose
-        type ends in ``/kind`` ("header", "footer", "footnotes", "settings"...)."""
-        folder, _, base = self.main_document_part.rpartition("/")
-        rels_name = f"{folder}/_rels/{base}.rels" if folder else f"_rels/{base}.rels"
+    @property
+    def numbering_part(self) -> str | None:
+        related = self.related_parts("numbering")
+        if related:
+            return related[0]
+        folder = self.main_document_part.rpartition("/")[0]
+        name = f"{folder}/numbering.xml" if folder else "numbering.xml"
+        return name if name in self._parts else None
+
+    # --------------------------------------------------------- relationships
+
+    @staticmethod
+    def rels_name(source: str) -> str:
+        """Name of the relationships part that belongs to part ``source``."""
+        folder, _, base = source.rpartition("/")
+        return f"{folder}/_rels/{base}.rels" if folder else f"_rels/{base}.rels"
+
+    def relationships(self, source: str | None = None) -> list[dict]:
+        """The relationships of part ``source`` (default: the main document)
+        as ``{"id", "type", "target", "external"}``. ``target`` is a part name
+        for an internal relationship and the address itself for an external one."""
+        source = source or self.main_document_part
+        rels_name = self.rels_name(source)
         if rels_name not in self._parts:
             return []
         try:
             rels = self.xml(rels_name)
         except PackageError:
             return []
-        found: list[str] = []
-        for rel in rels.iter(f"{{{PKG_RELS_NS}}}Relationship"):
-            if not rel.get("Type", "").endswith("/" + kind) or rel.get("TargetMode") == "External":
-                continue
+        folder = source.rpartition("/")[0]
+        found = []
+        for rel in rels.iter(_RELATIONSHIP):
+            external = rel.get("TargetMode") == "External"
             target = rel.get("Target", "")
-            if target.startswith("/"):
-                name = target.lstrip("/")
-            else:
-                name = posixpath.normpath(posixpath.join(folder, target))
-            if name in self._parts and name not in found:
-                found.append(name)
+            if not external:
+                target = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join(folder, target))
+            found.append({"id": rel.get("Id", ""), "type": rel.get("Type", ""), "target": target, "external": external})
         return found
+
+    def related_parts(self, kind: str, source: str | None = None) -> list[str]:
+        """Parts that ``source`` (default: the main document part) points to
+        with a relationship whose type ends in ``/kind`` ("header", "footer",
+        "footnotes", "settings"...)."""
+        found: list[str] = []
+        for rel in self.relationships(source):
+            if rel["external"] or not rel["type"].endswith("/" + kind):
+                continue
+            if rel["target"] in self._parts and rel["target"] not in found:
+                found.append(rel["target"])
+        return found
+
+    def relationship(self, source: str, rel_id: str) -> dict | None:
+        """The relationship ``rel_id`` of part ``source``, as in :meth:`relationships`."""
+        return next((rel for rel in self.relationships(source) if rel["id"] == rel_id), None)
+
+    def relate(self, source: str, rel_type: str, target: str, external: bool = False) -> str:
+        """Point part ``source`` at ``target`` and return the relationship id.
+
+        ``rel_type`` is a full type URI or its last word ("image",
+        "hyperlink", "header"...). ``target`` is a part name, or for
+        ``external`` the address itself. An identical relationship is reused."""
+        self._require(source)
+        if "/" not in rel_type:
+            rel_type = f"{R_NS}/{rel_type}"
+        for rel in self.relationships(source):
+            if (rel["type"], rel["target"], rel["external"]) == (rel_type, target, external):
+                return rel["id"]
+        rels_name = self.rels_name(source)
+        if rels_name not in self._parts:
+            self.add_part(
+                rels_name,
+                f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="{PKG_RELS_NS}"/>',
+                RELS_CONTENT_TYPE,
+            )
+        rels = self.xml(rels_name)
+        taken = {rel.get("Id") for rel in rels.iter(_RELATIONSHIP)}
+        number = len(taken) + 1
+        while f"rId{number}" in taken:
+            number += 1
+        rel = etree.SubElement(rels, _RELATIONSHIP)
+        rel.set("Id", f"rId{number}")
+        rel.set("Type", rel_type)
+        if external:
+            rel.set("Target", target)
+            rel.set("TargetMode", "External")
+        else:
+            self._require(target)
+            rel.set("Target", posixpath.relpath(target, source.rpartition("/")[0] or "."))
+        return f"rId{number}"
+
+    # ------------------------------------------------------------- new parts
+
+    def next_part_name(self, prefix: str, suffix: str) -> str:
+        """An unused part name such as ``word/media/image3.png`` for
+        ``("word/media/image", ".png")``."""
+        number = 1
+        while f"{prefix}{number}{suffix}" in self._parts:
+            number += 1
+        return f"{prefix}{number}{suffix}"
+
+    def add_part(self, name: str, data: bytes | str, content_type: str) -> str:
+        """Add a new part and register its content type. XML parts get an
+        ``Override``; other files (images) a ``Default`` for their extension
+        when it is free."""
+        _check_name(name)
+        if name in self._parts:
+            raise PackageError(f"A part named {name!r} already exists")
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        if _is_xml(name):
+            parse_xml(data)  # refuse a part that would not load again
+        types = self.xml(CONTENT_TYPES)
+        default_tag, override_tag = f"{{{CONTENT_TYPES_NS}}}Default", f"{{{CONTENT_TYPES_NS}}}Override"
+        extension = posixpath.splitext(name)[1].lstrip(".").lower()
+        defaults = {d.get("Extension", "").lower(): d for d in types.iter(default_tag)}
+        stale = next((o for o in types.iter(override_tag) if o.get("PartName", "").lstrip("/") == name), None)
+        if stale is not None:
+            stale.set("ContentType", content_type)  # left behind by a part that is gone
+        elif extension in defaults and defaults[extension].get("ContentType") == content_type:
+            pass  # already covered by the extension
+        elif extension and extension not in defaults and not _is_xml(name):
+            entry = etree.Element(default_tag)
+            entry.set("Extension", extension)
+            entry.set("ContentType", content_type)
+            last = max((types.index(d) for d in defaults.values()), default=-1)
+            types.insert(last + 1, entry)
+        else:
+            entry = etree.SubElement(types, override_tag)
+            entry.set("PartName", "/" + name)
+            entry.set("ContentType", content_type)
+        self._parts[name] = data
+        return name
 
     def list_parts(self) -> list[str]:
         return list(self._parts)

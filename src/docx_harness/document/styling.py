@@ -6,17 +6,21 @@ import re
 
 from lxml import etree
 
+from . import builtin_styles
 from .ooxml import (
     PPR,
     PPR_ORDER,
     RPR,
     RPR_ORDER,
+    W_NS,
+    el,
     ensure_child,
     get_or_add_ppr,
     get_or_add_rpr,
     qn,
     remove_child,
 )
+from .package import parse_xml
 
 VAL = qn("w:val")
 
@@ -296,17 +300,149 @@ def _key(value: str) -> str:
     return re.sub(r"[\s_-]+", "", value).lower()
 
 
+def _find_style(styles_root: etree._Element | None, name_or_id: str, style_type: str) -> str | None:
+    wanted = _key(name_or_id)
+    for style in list_styles(styles_root):
+        if style["type"] == style_type and wanted in (_key(style["id"]), _key(style["name"])):
+            return style["id"]
+    return None
+
+
+def _builtin(name_or_id: str, style_type: str) -> builtin_styles.BuiltinStyle | None:
+    wanted = _key(name_or_id)
+    return next((b for b in builtin_styles.ALL
+                 if b.type == style_type and wanted in (_key(b.style_id), _key(b.name))), None)
+
+
 def resolve_style(styles_root: etree._Element | None, name_or_id: str, style_type: str = "paragraph") -> str:
     """Map a style name or id ("Heading 1", "heading1", "Heading1") to its id."""
+    found = _find_style(styles_root, name_or_id, style_type)
+    if found is not None:
+        return found
     candidates = [s for s in list_styles(styles_root) if s["type"] == style_type]
-    wanted = _key(name_or_id)
-    for style in candidates:
-        if _key(style["id"]) == wanted or _key(style["name"]) == wanted:
-            return style["id"]
     available = ", ".join(sorted(s["name"] for s in candidates)) or "(none)"
     raise StyleError(
-        f"No {style_type} style named {name_or_id!r} in this document. Available: {available}"
+        f"No {style_type} style named {name_or_id!r} in this document. Available: {available}. "
+        "Use one of these, or define a new style with create_style."
     )
+
+
+def default_style_id(styles_root: etree._Element | None, style_type: str) -> str | None:
+    return next((s["id"] for s in list_styles(styles_root) if s["type"] == style_type and s["default"]), None)
+
+
+def unique_style_id(styles_root: etree._Element, wanted: str) -> str:
+    taken = {s["id"] for s in list_styles(styles_root)}
+    candidate, number = wanted, 1
+    while candidate in taken:
+        number += 1
+        candidate = f"{wanted}{number}"
+    return candidate
+
+
+def add_style(styles_root: etree._Element, xml: str) -> etree._Element:
+    """Append a ``w:style`` given as text (no namespace declarations). A
+    ``basedOn`` naming a style the document lacks is pointed at the document's
+    default style of that type instead, or dropped when it has none."""
+    style = parse_xml(f'<w:styles xmlns:w="{W_NS}">{xml}</w:styles>')[0]
+    based_on = style.find(qn("w:basedOn"))
+    if based_on is not None and based_on.get(VAL) not in {s["id"] for s in list_styles(styles_root)}:
+        fallback = default_style_id(styles_root, style.get(qn("w:type"), "paragraph"))
+        if fallback:
+            based_on.set(VAL, fallback)
+        else:
+            style.remove(based_on)
+    next_style = style.find(qn("w:next"))
+    if next_style is not None and next_style.get(VAL) not in {s["id"] for s in list_styles(styles_root)}:
+        style.remove(next_style)
+    styles_root.append(style)
+    return style
+
+
+def ensure_style(styles_root: etree._Element, name_or_id: str, style_type: str = "paragraph",
+                 list_num_id=None) -> str:
+    """Like :func:`resolve_style`, but a well-known style the document does
+    not define (Word leaves unused built-in styles out of the file) is added
+    from :mod:`builtin_styles`. ``list_num_id(kind)`` supplies the numbering
+    id for a list style; without it list styles are not created."""
+    found = _find_style(styles_root, name_or_id, style_type)
+    if found is not None:
+        return found
+    builtin = _builtin(name_or_id, style_type)
+    if builtin is None or (builtin.list_kind and list_num_id is None):
+        return resolve_style(styles_root, name_or_id, style_type)  # raises, listing what there is
+    num_id = list_num_id(builtin.list_kind) if builtin.list_kind else None
+    style_id = unique_style_id(styles_root, builtin.style_id)
+    add_style(styles_root, builtin.xml(num_id, style_id))
+    return style_id
+
+
+def style_num_pr(styles_root: etree._Element | None, style_id: str | None) -> tuple[int | None, int | None]:
+    """``(numbering id, level)`` a paragraph style supplies, through its
+    ``basedOn`` chain; ``style_id`` None means the default paragraph style."""
+    if styles_root is None:
+        return None, None
+    styles = {s.get(qn("w:styleId")): s for s in styles_root.iter(qn("w:style")) if s.get(qn("w:type")) == "paragraph"}
+    style = styles.get(style_id) if style_id else next(
+        (s for s in styles.values() if s.get(qn("w:default")) in ("1", "true")), None)
+    num_id = level = None
+    seen: list[etree._Element] = []
+    while style is not None and style not in seen:
+        seen.append(style)
+        ppr = style.find(PPR)
+        pr = ppr.find(qn("w:numPr")) if ppr is not None else None
+        if pr is not None:
+            for tag, current in (("w:numId", num_id), ("w:ilvl", level)):
+                child = pr.find(qn(tag))
+                if current is None and child is not None and child.get(VAL, "").lstrip("-").isdigit():
+                    if tag == "w:numId":
+                        num_id = int(child.get(VAL))
+                    else:
+                        level = int(child.get(VAL))
+        based_on = style.find(qn("w:basedOn"))
+        style = styles.get(based_on.get(VAL)) if based_on is not None else None
+    return num_id, level
+
+
+RUN_KEYS = ("bold", "italic", "underline", "strike", "color", "size_pt", "font", "highlight")
+PARAGRAPH_KEYS = ("alignment", "space_before_pt", "space_after_pt", "line_spacing", "indent_left_in",
+                  "indent_right_in", "first_line_indent_in", "page_break_before", "keep_with_next")
+
+
+def create_style(styles_root: etree._Element, name: str, style_type: str = "paragraph",
+                 based_on_id: str | None = None, **fmt) -> str:
+    """Define a new paragraph or character style and return its id. ``fmt``
+    takes the keywords of :func:`apply_run_format` and, for a paragraph
+    style, :func:`apply_paragraph_format`."""
+    name = " ".join(str(name).split())
+    if not name:
+        raise StyleError("A style needs a name.")
+    if style_type not in ("paragraph", "character"):
+        raise StyleError("style_type must be 'paragraph' or 'character'.")
+    if _find_style(styles_root, name, style_type) is not None:
+        raise StyleError(f"A {style_type} style named {name!r} already exists. Use it as it is, or pick another name.")
+    fmt = {k: v for k, v in fmt.items() if v is not None}
+    allowed = RUN_KEYS + (PARAGRAPH_KEYS if style_type == "paragraph" else ())
+    unknown = sorted(set(fmt) - set(allowed))
+    if unknown:
+        raise StyleError(f"A {style_type} style cannot set {', '.join(unknown)}. Options: {', '.join(allowed)}.")
+    style_id = unique_style_id(styles_root, re.sub(r"[^A-Za-z0-9]", "", name) or "Style")
+    style = el("w:style", {"w:type": style_type, "w:customStyle": "1", "w:styleId": style_id},
+               el("w:name", {"w:val": name}))
+    if based_on_id:
+        style.append(el("w:basedOn", {"w:val": based_on_id}))
+    style.append(el("w:qFormat"))
+    # Created here, in schema order, so the format helpers find them in place.
+    ppr, rpr = el("w:pPr"), el("w:rPr")
+    style.append(ppr)
+    style.append(rpr)
+    apply_paragraph_format(style, **{k: v for k, v in fmt.items() if k in PARAGRAPH_KEYS})
+    apply_run_format(style, **{k: v for k, v in fmt.items() if k in RUN_KEYS})
+    for props in (ppr, rpr):
+        if len(props) == 0:
+            style.remove(props)
+    styles_root.append(style)
+    return style_id
 
 
 def style_name(styles_root: etree._Element | None, style_id: str | None, style_type: str = "paragraph") -> str:

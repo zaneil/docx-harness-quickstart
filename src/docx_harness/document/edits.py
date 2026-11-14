@@ -45,6 +45,8 @@ from .ooxml import (
     DEL,
     DEL_INSTR_TEXT,
     DEL_TEXT,
+    FLD_SIMPLE,
+    HYPERLINK,
     INS,
     INSTR_TEXT,
     MOVE_FROM,
@@ -56,6 +58,7 @@ from .ooxml import (
     PPR_CHANGE,
     PPR_ORDER,
     PROPERTY_CHANGES,
+    R,
     RPR,
     RPR_CHANGE,
     SECTPR,
@@ -200,6 +203,86 @@ class EditContext:
         wrapper.append(run)
         for text in run.iter(T, INSTR_TEXT):
             text.tag = DEL_TEXT if text.tag == T else DEL_INSTR_TEXT
+
+    # ------------------------------------------------------------- wrappers
+
+    def wrap_runs(self, runs: list[etree._Element], wrapper: etree._Element) -> list[etree._Element]:
+        """Put ``runs`` (live runs of one paragraph, in order) inside copies
+        of ``wrapper`` (a ``w:hyperlink``), one for each stretch of
+        neighbouring runs, and return those copies.
+
+        When tracking, the text is recorded as deleted and inserted again
+        inside the wrapper, so rejecting the change gives the plain text back."""
+        made = []
+        for group in _stretches(runs):
+            parent = group[0].getparent()
+            new = copy.deepcopy(wrapper)
+            if self.tracking and not self._mine(parent):
+                index = parent.index(group[-1]) + 1
+                while parent.tag in _WRAPPERS:
+                    parent, index = self._step_out(parent, index)
+                inserted = self._revision("w:ins")
+                for run in group:
+                    inserted.append(_twin(run))
+                new.append(inserted)
+                parent.insert(index, new)
+                for run in group:
+                    self.delete_run(run)
+            else:
+                first, last = parent.index(group[0]), parent.index(group[-1])
+                if parent.tag in _WRAPPERS:
+                    # A revision cannot hold the wrapper, so the wrapper goes
+                    # around the part of the revision that holds these runs.
+                    nodes = [self._alone(parent, first, last)]
+                else:
+                    nodes = list(parent)[first:last + 1]
+                outer = nodes[0].getparent()
+                outer.insert(outer.index(nodes[0]), new)
+                for node in nodes:
+                    new.append(node)
+            made.append(new)
+        return made
+
+    def _alone(self, revision: etree._Element, first: int, last: int) -> etree._Element:
+        """Split a revision wrapper so that its children ``first..last`` are
+        the only ones left in it."""
+        children = list(revision)
+        for group, place in ((children[last + 1:], revision.addnext), (children[:first], revision.addprevious)):
+            if group:
+                part = etree.Element(revision.tag, attrib=dict(revision.attrib), nsmap=revision.nsmap)
+                part.set(_ID, self._new_id())
+                for child in group:
+                    part.append(child)
+                place(part)
+        return revision
+
+    def unwrap_runs(self, wrapper: etree._Element) -> list[etree._Element]:
+        """Take the runs out of ``wrapper`` (a ``w:hyperlink``) and remove
+        it; returns the runs now standing in its place. When tracking, the
+        wrapped text is recorded as deleted and inserted again after it."""
+        runs = [r for r in wrapper.iter(R)
+                if not any(a.tag in (DEL, MOVE_FROM) for a in r.iterancestors() if a is not wrapper
+                           and wrapper in a.iterancestors())]
+        if not self.tracking or all(self._mine(r.getparent()) for r in runs):
+            unwrap(wrapper)
+            return runs
+        parent = wrapper.getparent()
+        inserted = self._revision("w:ins")
+        twins = [_twin(run) for run in runs]
+        for twin in twins:
+            inserted.append(twin)
+        parent.insert(parent.index(wrapper) + 1, inserted)
+        for run in runs:
+            self.delete_run(run)
+        if len(wrapper) == 0:
+            parent.remove(wrapper)
+        return twins
+
+    @staticmethod
+    def remove_if_empty(wrapper: etree._Element) -> None:
+        """Drop a wrapper (a ``w:hyperlink``) that no longer holds anything."""
+        if len(wrapper) == 0 and wrapper.getparent() is not None:
+            wrapper.getparent().remove(wrapper)
 
     # ---------------------------------------------------------------- blocks
 
@@ -508,6 +591,9 @@ class EditContext:
         ppr = p.find(PPR)
         if ppr is not None and ppr.find(SECTPR) is not None:
             return  # the paragraph carries a section break; keep it
+        # A link or field whose text has gone is an empty shell, not content.
+        for shell in [child for child in p if child.tag in (HYPERLINK, FLD_SIMPLE) and next(child.iter(R), None) is None]:
+            p.remove(shell)
         content = [child for child in p if child.tag not in (PPR, *MOVE_RANGE_STARTS, *MOVE_RANGE_ENDS)]
         following = p.getnext()
         if not content:
@@ -522,6 +608,28 @@ class EditContext:
                 following.insert(index, child)
                 index += 1
             holder.remove(p)
+
+
+def _stretches(runs: list[etree._Element]) -> list[list[etree._Element]]:
+    """``runs`` grouped into stretches that share a parent."""
+    groups: list[list[etree._Element]] = []
+    for run in runs:
+        if groups and groups[-1][-1].getparent() is run.getparent():
+            groups[-1].append(run)
+        else:
+            groups.append([run])
+    return groups
+
+
+def _twin(run: etree._Element) -> etree._Element:
+    """A copy of a run to insert elsewhere, without its formatting history."""
+    twin = copy.deepcopy(run)
+    twin.tail = None
+    rpr = twin.find(RPR)
+    change = rpr.find(RPR_CHANGE) if rpr is not None else None
+    if change is not None:
+        rpr.remove(change)
+    return twin
 
 
 def _cell_mark(tc: etree._Element, tag: str) -> etree._Element | None:

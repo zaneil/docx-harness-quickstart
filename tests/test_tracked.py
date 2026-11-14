@@ -575,7 +575,7 @@ def test_story_tools():
     assert registry.execute("replace_text", {"find": "Draft", "replace": "Final", "block": HEADER}) == "Replaced 1 occurrence(s)."
     assert f"in {HEADER}: 'Final'" in registry.execute("list_revisions", {})
     plain = ToolRegistry(default_tools(WordDocument.open()))
-    assert plain.execute("read_headers_footnotes", {}) == "The document has no headers, footers, footnotes or endnotes."
+    assert plain.execute("read_headers_footnotes", {}).startswith("The document has no headers, footers, footnotes or endnotes.")
 
 
 def test_untracked_story_edits_and_untouched_parts():

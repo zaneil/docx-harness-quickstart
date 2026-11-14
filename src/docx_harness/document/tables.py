@@ -28,6 +28,7 @@ from .ooxml import (
     GRID_BEFORE,
     GRID_COL,
     GRID_SPAN,
+    H_MERGE,
     P,
     SDT,
     SDT_CONTENT,
@@ -105,6 +106,43 @@ def v_merge(tc: etree._Element) -> str | None:
     if merge is None:
         return None
     return "restart" if merge.get(VAL) == "restart" else "continue"
+
+
+def h_merge(tc: etree._Element) -> str | None:
+    """The legacy horizontal merge mark (``w:hMerge``) on a cell: "restart"
+    for the first cell, "continue" for those it swallows, None for none."""
+    tcpr = tc.find(TCPR)
+    merge = tcpr.find(H_MERGE) if tcpr is not None else None
+    if merge is None:
+        return None
+    return "restart" if merge.get(VAL) == "restart" else "continue"
+
+
+def h_merge_runs(tbl: etree._Element) -> list[tuple[etree._Element | None, list[etree._Element]]]:
+    """Every legacy horizontal merge in the table's own rows as ``(first
+    cell, the cells it swallows)``. A stray mark with no partner comes back
+    as ``(cell, [])`` or ``(None, [cell])``."""
+    runs: list[tuple[etree._Element | None, list[etree._Element]]] = []
+    for tr in _through(tbl, TR):
+        open_run = None
+        for tc in row_cells(tr, include_deleted=True):
+            state = h_merge(tc)
+            if state == "restart":
+                open_run = (tc, [])
+                runs.append(open_run)
+            elif state == "continue":
+                if open_run is None:
+                    runs.append((None, [tc]))
+                else:
+                    open_run[1].append(tc)
+            else:
+                open_run = None
+    return runs
+
+
+def clear_h_merge(tc: etree._Element) -> None:
+    if tc.find(TCPR) is not None:
+        remove_child(tc.find(TCPR), "w:hMerge")
 
 
 def grid_before(tr: etree._Element) -> int:
@@ -196,9 +234,19 @@ def build_grid(tbl: etree._Element) -> Grid:
     for r, tr in enumerate(rows):
         row: dict[int, Position] = {}
         col = physical = grid_before(tr)
+        merging: Position | None = None  # the open legacy horizontal merge of this row
         for tc in row_cells(tr, include_deleted=True):
             width = span(tc)
             if cell_mark(tc, CELL_DEL) is not None:
+                physical += width
+                continue
+            if h_merge(tc) == "continue" and merging is not None:
+                # Written by old versions of Word: the cell is swallowed by
+                # the one that opened the merge, as with a gridSpan.
+                merging.slot.colspan += width
+                for c in range(col, col + width):
+                    row[c] = merging
+                col += width
                 physical += width
                 continue
             above = positions[r - 1].get(col) if r > 0 else None
@@ -208,8 +256,10 @@ def build_grid(tbl: etree._Element) -> Grid:
                 slot.members.append(tc)
             else:
                 slot = Slot(tc, r, col, 1, width, [tc])
+            position = Position(slot, tc, physical)
             for c in range(col, col + width):
-                row[c] = Position(slot, tc, physical)
+                row[c] = position
+            merging = position if h_merge(tc) == "restart" else None
             col += width
             physical += width
         positions.append(row)
@@ -390,6 +440,132 @@ def set_table_alignment(tbl: etree._Element, alignment: str) -> None:
     ensure_child(get_or_add_props(tbl, "w:tblPr"), "w:jc", TBLPR_ORDER).set(VAL, alignment)
 
 
+# ------------------------------------------------- borders, padding, direction
+
+SIDES = ("top", "left", "bottom", "right")
+OPPOSITE = {"top": "bottom", "bottom": "top", "left": "right", "right": "left"}
+BORDER_STYLES = {"none": "nil", "single": "single", "double": "double", "dashed": "dashed",
+                 "dotted": "dotted", "thick": "thick"}
+_BORDER_NAMES = {value: key for key, value in BORDER_STYLES.items()} | {"none": "none"}
+TEXT_DIRECTIONS = {"horizontal": None, "vertical": "tbRl", "vertical_up": "btLr"}
+_DIRECTION_NAMES = {"tbRl": "vertical", "tbRlV": "vertical", "btLr": "vertical_up", "lrTb": "horizontal"}
+BORDER_PRESETS = {
+    "all": ("top", "left", "bottom", "right", "insideH", "insideV"),
+    "none": (),
+    "outer": ("top", "left", "bottom", "right"),
+    "horizontal": ("top", "bottom", "insideH"),
+}
+# Each side also has a writing-direction name (start / end) in the schema.
+_EDGE_ORDER = ["w:top", "w:start", "w:left", "w:bottom", "w:end", "w:right", "w:insideH", "w:insideV",
+               "w:tl2br", "w:tr2bl"]
+_LOGICAL = {"left": "start", "right": "end"}
+_SZ = qn("w:sz")
+_COLOR = qn("w:color")
+
+
+def _set_edge(holder: etree._Element, side: str, style: str, size: int = 4, color: str = "auto") -> None:
+    """One edge of a ``w:tcBorders`` / ``w:tblBorders``. ``style`` is a key of
+    BORDER_STYLES; ``size`` is in eighths of a point."""
+    if side in _LOGICAL:
+        remove_child(holder, "w:" + _LOGICAL[side])
+    edge = ensure_child(holder, "w:" + side, _EDGE_ORDER)
+    edge.attrib.clear()
+    edge.set(VAL, BORDER_STYLES[style])
+    edge.set(_SZ, "0" if style == "none" else str(size))
+    edge.set(qn("w:space"), "0")
+    edge.set(_COLOR, color)
+
+
+def _edges(holder: etree._Element | None, sides: tuple) -> dict:
+    out: dict = {}
+    for side in sides:
+        edge = None
+        if holder is not None:
+            edge = holder.find(qn("w:" + side))
+            if edge is None and side in _LOGICAL:
+                edge = holder.find(qn("w:" + _LOGICAL[side]))
+        if edge is None:
+            continue
+        style = _BORDER_NAMES.get(edge.get(VAL, ""), edge.get(VAL, ""))
+        entry: dict = {"style": style}
+        if style != "none":
+            entry["width_pt"] = _int(edge, _SZ) / 8
+            if edge.get(_COLOR) not in (None, "auto"):
+                entry["color"] = edge.get(_COLOR).upper()
+        out[side] = entry
+    return out
+
+
+def set_cell_border(tc: etree._Element, side: str, style: str, size: int = 4, color: str = "auto") -> None:
+    _set_edge(ensure_child(_tcpr(tc), "w:tcBorders", TCPR_ORDER), side, style, size, color)
+
+
+def _set_margins(holder: etree._Element, twips: int) -> None:
+    for side in SIDES:
+        if side in _LOGICAL:
+            remove_child(holder, "w:" + _LOGICAL[side])
+        edge = ensure_child(holder, "w:" + side, _EDGE_ORDER)
+        edge.set(_W, str(twips))
+        edge.set(_TYPE, "dxa")
+
+
+def _margins(holder: etree._Element | None) -> float | None:
+    """Padding in inches when all four sides are set to one value."""
+    if holder is None:
+        return None
+    values = set()
+    for side in SIDES:
+        edge = holder.find(qn("w:" + side))
+        if edge is None and side in _LOGICAL:
+            edge = holder.find(qn("w:" + _LOGICAL[side]))
+        if edge is None or edge.get(_TYPE, "dxa") != "dxa":
+            return None
+        values.add(_int(edge, _W))
+    return round(values.pop() / TWIPS_PER_INCH, 3) if len(values) == 1 else None
+
+
+def set_cell_margins(tc: etree._Element, twips: int) -> None:
+    """Padding between the cell's edges and its text, the same on all sides."""
+    _set_margins(ensure_child(_tcpr(tc), "w:tcMar", TCPR_ORDER), twips)
+
+
+def set_text_direction(tc: etree._Element, direction: str) -> None:
+    """``direction`` is a key of TEXT_DIRECTIONS."""
+    value = TEXT_DIRECTIONS[direction]
+    if value is None:
+        if tc.find(TCPR) is not None:
+            remove_child(tc.find(TCPR), "w:textDirection")
+    else:
+        ensure_child(_tcpr(tc), "w:textDirection", TCPR_ORDER).set(VAL, value)
+
+
+def set_table_borders(tbl: etree._Element, preset: str) -> None:
+    """Draw the table's lines: a key of BORDER_PRESETS. Lines set on single
+    cells still win over these."""
+    borders = ensure_child(get_or_add_props(tbl, "w:tblPr"), "w:tblBorders", TBLPR_ORDER)
+    for side in BORDER_PRESETS["all"]:
+        _set_edge(borders, side, "single" if side in BORDER_PRESETS[preset] else "none")
+
+
+def table_borders(tbl: etree._Element) -> str | None:
+    """The preset the table's own borders match, if they match one."""
+    tblpr = tbl.find(qn("w:tblPr"))
+    borders = tblpr.find(qn("w:tblBorders")) if tblpr is not None else None
+    if borders is None:
+        return None
+    drawn = tuple(side for side, edge in _edges(borders, BORDER_PRESETS["all"]).items() if edge["style"] != "none")
+    return next((name for name, sides in BORDER_PRESETS.items() if set(sides) == set(drawn)), None)
+
+
+def set_table_cell_margins(tbl: etree._Element, twips: int) -> None:
+    _set_margins(ensure_child(get_or_add_props(tbl, "w:tblPr"), "w:tblCellMar", TBLPR_ORDER), twips)
+
+
+def table_cell_margins(tbl: etree._Element) -> float | None:
+    tblpr = tbl.find(qn("w:tblPr"))
+    return _margins(tblpr.find(qn("w:tblCellMar")) if tblpr is not None else None)
+
+
 def apply_cell_format(tc: etree._Element, fill: str | None = None, vertical_align: str | None = None) -> None:
     """``fill`` is a 6-digit hex color, or "" to remove the shading."""
     tcpr = _tcpr(tc)
@@ -405,7 +581,9 @@ def apply_cell_format(tc: etree._Element, fill: str | None = None, vertical_alig
 
 
 def cell_format(tc: etree._Element) -> dict:
-    """Direct cell formatting: ``shading`` (hex) and ``vertical_align``."""
+    """Direct cell formatting: ``shading`` (hex), ``vertical_align``,
+    ``borders`` (per side: style, width_pt, color), ``margins_in`` (when the
+    four sides agree) and ``text_direction`` (when not horizontal)."""
     out: dict = {}
     tcpr = tc.find(TCPR)
     if tcpr is None:
@@ -417,4 +595,13 @@ def cell_format(tc: etree._Element) -> dict:
     valign = tcpr.find(qn("w:vAlign"))
     if valign is not None and valign.get(VAL):
         out["vertical_align"] = valign.get(VAL)
+    borders = _edges(tcpr.find(qn("w:tcBorders")), SIDES)
+    if borders:
+        out["borders"] = borders
+    margins = _margins(tcpr.find(qn("w:tcMar")))
+    if margins is not None:
+        out["margins_in"] = margins
+    direction = tcpr.find(qn("w:textDirection"))
+    if direction is not None and _DIRECTION_NAMES.get(direction.get(VAL, ""), "horizontal") != "horizontal":
+        out["text_direction"] = _DIRECTION_NAMES[direction.get(VAL)]
     return out

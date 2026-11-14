@@ -14,7 +14,10 @@ from lxml import etree
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
-NSMAP = {"w": W_NS, "r": R_NS}
+WP_NS = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+PIC_NS = "http://schemas.openxmlformats.org/drawingml/2006/picture"
+NSMAP = {"w": W_NS, "r": R_NS, "wp": WP_NS, "a": A_NS, "pic": PIC_NS}
 
 
 def qn(tag: str) -> str:
@@ -55,6 +58,7 @@ GRID_COL = qn("w:gridCol")
 GRID_SPAN = qn("w:gridSpan")
 GRID_BEFORE = qn("w:gridBefore")
 V_MERGE = qn("w:vMerge")
+H_MERGE = qn("w:hMerge")
 TBL_HEADER = qn("w:tblHeader")
 CELL_INS = qn("w:cellIns")
 CELL_DEL = qn("w:cellDel")
@@ -68,6 +72,10 @@ TCPR_CHANGE = qn("w:tcPrChange")
 TBLPR_CHANGE = qn("w:tblPrChange")
 PROPERTY_CHANGES = (RPR_CHANGE, PPR_CHANGE, TRPR_CHANGE, TCPR_CHANGE, TBLPR_CHANGE)
 AUTHOR = qn("w:author")
+HYPERLINK = qn("w:hyperlink")
+DRAWING = qn("w:drawing")
+FLD_SIMPLE = qn("w:fldSimple")
+R_ID = qn("r:id")
 XML_SPACE = f"{{{XML_NS}}}space"
 
 # Child order required by the schema (CT_RPr / CT_PPr). Word can refuse files
@@ -117,11 +125,26 @@ SETTINGS_BEFORE_TRACK_REVISIONS = [
     "w:documentType", "w:mailMerge", "w:revisionView",
 ]
 TRACK_REVISIONS = qn("w:trackRevisions")
+# ...and those that come before w:evenAndOddHeaders.
+SETTINGS_BEFORE_EVEN_AND_ODD = SETTINGS_BEFORE_TRACK_REVISIONS + [
+    "w:trackRevisions", "w:doNotTrackMoves", "w:doNotTrackFormatting", "w:documentProtection",
+    "w:autoFormatOverride", "w:styleLockTheme", "w:styleLockQFSet", "w:defaultTabStop",
+    "w:autoHyphenation", "w:consecutiveHyphenLimit", "w:hyphenationZone", "w:doNotHyphenateCaps",
+    "w:showEnvelope", "w:summaryLength", "w:clickAndTypeStyle", "w:defaultTableStyle",
+]
+# Children of w:sectPr in schema order (the header and footer references come first).
+SECTPR_ORDER = [
+    "w:headerReference", "w:footerReference", "w:footnotePr", "w:endnotePr", "w:type", "w:pgSz",
+    "w:pgMar", "w:paperSrc", "w:pgBorders", "w:lnNumType", "w:pgNumType", "w:cols", "w:formProt",
+    "w:vAlign", "w:noEndnote", "w:titlePg", "w:textDirection", "w:bidi", "w:rtlGutter", "w:docGrid",
+    "w:printerSettings", "w:sectPrChange",
+]
 
 
 def el(tag: str, attrs: dict[str, str] | None = None, *children: etree._Element) -> etree._Element:
     """Build an element: ``el("w:jc", {"w:val": "center"})``."""
-    element = etree.Element(qn(tag), nsmap={"w": W_NS})
+    prefixes = {"w", tag.partition(":")[0], *(key.partition(":")[0] for key in attrs or {})}
+    element = etree.Element(qn(tag), nsmap={prefix: NSMAP[prefix] for prefix in prefixes})
     for key, value in (attrs or {}).items():
         element.set(qn(key), str(value))
     for child in children:
