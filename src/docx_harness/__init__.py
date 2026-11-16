@@ -15,9 +15,11 @@ from .agent import (
     OpenAICompatibleClient,
     OpenRouterClient,
     Plan,
+    Reviewer,
     WORD_SYSTEM_PROMPT,
 )
 from .api import adraft, adraft_many, create_agent, draft
+from .review import DocumentReviewer
 from .document import DocumentError, EditContext, PackageError, StyleError, WordDocument, WordPackage
 from .tools import Tool, ToolRegistry, default_tools, tool
 
@@ -26,7 +28,7 @@ __version__ = "0.1.0"
 __all__ = [
     "WordDocument", "WordPackage", "EditContext", "DocumentError", "PackageError", "StyleError",
     "Tool", "ToolRegistry", "tool", "default_tools",
-    "Agent", "AgentEvent", "AgentResult", "Plan",
+    "Agent", "AgentEvent", "AgentResult", "Plan", "Reviewer", "DocumentReviewer",
     "LLMClient", "OpenAICompatibleClient", "OpenRouterClient", "WORD_SYSTEM_PROMPT",
     "create_agent", "draft", "adraft", "adraft_many",
 ]

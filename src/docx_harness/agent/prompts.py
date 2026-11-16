@@ -21,7 +21,17 @@ EXECUTE_PLAN_PROMPT = (
     "Then reply with a short summary of what you changed."
 )
 
-REVISE_PLAN_PROMPT = "Revise the plan based on this feedback, then reply with the full updated plan:\n\n{feedback}"
+REVIEW_FEEDBACK_PROMPT = """\
+A reviewer checked your work against the request and reported these problems:
+
+{feedback}
+
+The reviewer can be wrong. For each item, check it against the request and the current state \
+first (re-read only what you need), and fix it with the tools only if it really is a problem. \
+Never undo something the request asked for. If an item is wrong, leave it and say why in your summary. \
+Then reply with a short summary of what you changed."""
+
+REVISE_PLAN_PROMPT ="Revise the plan based on this feedback, then reply with the full updated plan:\n\n{feedback}"
 
 WORD_SYSTEM_PROMPT = """\
 You are an expert document drafter working on a Microsoft Word document through tools.

@@ -213,10 +213,11 @@ TYPOS = next(t for t in TASKS if t.id == "fix-typos")
 MEMO = next(t for t in TASKS if t.id == "memo")
 
 
-def solved(task, final="Done."):
-    """A scripted model that makes the task's reference solution calls."""
-    return ScriptedLLM([assistant(*(call(name, **arguments) for name, arguments in task.solution)),
-                        assistant(content=final)])
+def solved(task, final="Done.", review='{"ok": true}'):
+    """A scripted model that makes the task's reference solution calls, then
+    answers the reviewer with ``review`` (None: no reviewer turn)."""
+    turns = [assistant(*(call(name, **arguments) for name, arguments in task.solution)), assistant(content=final)]
+    return ScriptedLLM(turns + ([assistant(content=review)] if review is not None else []))
 
 
 async def test_run_suite_grades_judges_and_survives_errors(tmp_path):
@@ -240,6 +241,9 @@ async def test_run_suite_grades_judges_and_survives_errors(tmp_path):
     assert seen == results
     assert typos.passed and typos.status == "completed" and typos.steps == 2 and typos.tool_calls == 5
     assert typos.judge_score is None  # no rubric on that task
+    assert typos.reviews == [None] and memo.reviews == [None]
+    assert lazy_result.reviews == []  # its only edit failed, so there was nothing to review
+    assert broken_result.review_errors == []
     assert {c["name"] for c in typos.checks} >= {"finished", "opens_with_python_docx", "text_contains"}
     assert memo.passed and (memo.judge_score, memo.judge_reason) == (5, "Clear memo.")
     # the judge saw the request, the rubric and the document, with no tools
@@ -272,7 +276,7 @@ async def test_run_suite_records_max_steps_tokens_and_a_bad_client(tmp_path):
         usage = {"prompt_tokens": 120, "completion_tokens": 30, "cost": 0.002}
 
     looping = parse_task({**GOOD, "max_steps": 1}, default_id="looping")
-    results = await run_suite([looping], lambda: Counting([assistant(call("get_outline"))]), tmp_path)
+    results = await run_suite([looping], lambda: Counting([assistant(call("get_outline"))]), tmp_path, review=False)
     assert results[0].status == "max_steps" and not results[0].passed
     assert results[0].failed_checks[0]["name"] == "finished"
     assert (results[0].prompt_tokens, results[0].completion_tokens, results[0].cost) == (120, 30, 0.002)
@@ -311,6 +315,10 @@ def test_cli_list_show_check_and_report(tmp_path, capsys):
     (tmp_path / "results.json").write_text(json.dumps({
         "model": "m", "summary": report.summarize([]), "tasks": []}))
     assert main(["report", str(tmp_path), "--markdown"]) == 0
+    assert "| `m` (no review) | 0/0 (0%) |" in capsys.readouterr().out  # written before the review step existed
+    (tmp_path / "results.json").write_text(json.dumps({
+        "model": "m", "review": True, "summary": report.summarize([]), "tasks": []}))
+    assert main(["report", str(tmp_path), "--markdown"]) == 0
     assert "| `m` | 0/0 (0%) |" in capsys.readouterr().out
 
 
@@ -337,3 +345,36 @@ async def test_client_sums_cost_when_the_provider_reports_it():
     await client.acomplete([{"role": "user", "content": "x"}])
     assert client.usage == {"prompt_tokens": 30, "completion_tokens": 15, "requests": 3, "cost": pytest.approx(0.003)}
 
+
+async def test_review_feedback_is_fixed_and_counted(tmp_path):
+    lazy = parse_task({**GOOD, "instruction": "Fix it.", "input": [{"paragraph": "Teh end."}],
+                       "checks": [{"text_contains": "The end."}]}, default_id="lazy")
+
+    class Counting(ScriptedLLM):
+        def __init__(self, turns, tokens):
+            super().__init__(turns)
+            self.usage = {"prompt_tokens": tokens, "completion_tokens": 1, "cost": 0.001}
+
+    agent_llm = Counting([assistant(call("replace_text", find="end", replace="end")), assistant(content="Done."),
+                          assistant(call("replace_text", find="Teh", replace="The")), assistant(content="Fixed.")], 100)
+    reviewer_llm = Counting([assistant(content='{"ok": false, "issues": ["b1 still says Teh."]}'),
+                             assistant(content='{"ok": true}')], 50)
+    results = await run_suite([lazy], lambda: agent_llm, tmp_path, make_review_llm=lambda: reviewer_llm)
+    result = results[0]
+    assert result.passed and result.reviews == ["1. b1 still says Teh.", None]
+    assert (result.prompt_tokens, result.completion_tokens) == (150, 2) and result.cost == 0.002
+    assert "1 review fix round" in report.task_line(result)
+    assert report.summarize(results)["reviewed_fixes"] == 1
+    assert "1 task(s) fixed after review" in report.console("m", results)
+
+    report.write_results(tmp_path / "results.json", "m", results, None, "2026-01-01T00:00:00", review_model="judge/x")
+    assert "| `m` (review by judge/x) |" in report.markdown([report.load_results(tmp_path)])
+    report.write_results(tmp_path / "results.json", "m", results, None, "2026-01-01T00:00:00", review=False)
+    assert "| `m` (no review) |" in report.markdown([report.load_results(tmp_path)])
+
+
+async def test_a_failed_review_is_recorded(tmp_path):
+    result = (await run_suite([TYPOS], lambda: solved(TYPOS, review=None), tmp_path))[0]
+    assert result.passed and result.reviews == []
+    assert result.review_errors and "ran out of turns" in result.review_errors[0]
+    assert "review failed: AssertionError" in report.task_line(result)

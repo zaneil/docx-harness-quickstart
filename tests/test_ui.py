@@ -52,18 +52,19 @@ def test_page_and_empty_state(ui):
 
 def test_chat_streams_events_and_keeps_conversation(ui):
     llm, request, post_stream = ui
-    llm.turns = [assistant(paragraphs("Hello")), assistant(content="Added a greeting.")]
+    llm.turns = [assistant(paragraphs("Hello")), assistant(content="Added a greeting."), assistant(content='{"ok": true}')]
     events = post_stream("/chat", {"message": "say hello"})
-    assert [e["type"] for e in events] == ["tool", "reply", "state"]
+    assert [e["type"] for e in events] == ["tool", "review", "reply", "state"]
     assert events[0]["name"] == "insert_paragraphs"
-    assert events[1]["text"] == "Added a greeting."
-    assert [b["text"] for b in events[2]["blocks"]] == ["Hello"]
+    assert events[1]["feedback"] is None
+    assert events[2]["text"] == "Added a greeting."
+    assert [b["text"] for b in events[3]["blocks"]] == ["Hello"]
 
     # second turn continues the same conversation and the same document
     llm.turns = [assistant(call("replace_text", find="Hello", replace="Goodbye")), assistant(content="Changed.")]
-    events = post_stream("/chat", {"message": "make it goodbye"})
+    events = post_stream("/chat", {"message": "make it goodbye", "review": False})
     assert [b["text"] for b in events[-1]["blocks"]] == ["Goodbye"]
-    second_turn = llm.requests[2]["messages"]
+    second_turn = llm.requests[3]["messages"]
     assert [m["role"] for m in second_turn] == ["system", "user", "assistant", "tool", "assistant", "user"]
     assert second_turn[1]["content"] == "say hello" and second_turn[-1]["content"] == "make it goodbye"
 
@@ -85,7 +86,7 @@ def test_plan_feedback_approve_and_discard(ui):
     assert events[-1]["blocks"] == []
 
     llm.turns = [assistant(paragraphs("a", "b")), assistant(content="Done.")]
-    events = post_stream("/approve")
+    events = post_stream("/approve", {"review": False})
     assert [e["type"] for e in events] == ["tool", "reply", "state"]
     assert [b["text"] for b in events[-1]["blocks"]] == ["a", "b"] and events[-1]["pending"] is None
 
@@ -93,7 +94,7 @@ def test_plan_feedback_approve_and_discard(ui):
     post_stream("/chat", {"message": "wipe", "plan": True})
     state = json.loads(request("/discard", b""))
     assert state["pending"] is None and len(state["blocks"]) == 2
-    assert post_stream("/approve")[0]["type"] == "error"
+    assert post_stream("/approve", {"review": False})[0]["type"] == "error"
 
 
 def test_errors_are_reported_in_the_stream(ui):
@@ -132,10 +133,10 @@ def test_track_changes_toggle(ui):
     llm, request, post_stream = ui
     llm.turns = [assistant(paragraphs("Plain")), assistant(content="ok"),
                  assistant(call("replace_text", find="Plain", replace="Tracked")), assistant(content="ok")]
-    post_stream("/chat", {"message": "write"})
+    post_stream("/chat", {"message": "write", "review": False})
     state = json.loads(request("/track", json.dumps({"on": True}).encode()))
     assert state["track_changes"] is True and state["revisions"] == 0
-    state = post_stream("/chat", {"message": "edit"})[-1]
+    state = post_stream("/chat", {"message": "edit", "review": False})[-1]
     assert state["revisions"] == 2
     assert [r for r in state["blocks"][0]["runs"] if r.get("inserted")] == [{"text": "Tracked", "inserted": True}]
     doc = WordDocument(WordPackage.from_bytes(request("/download")))
@@ -149,15 +150,39 @@ def test_accept_and_reject_all(ui):
     llm.turns = [assistant(paragraphs("Plain")), assistant(content="ok"),
                  assistant(call("replace_text", find="Plain", replace="Tracked")), assistant(content="ok"),
                  assistant(call("replace_text", find="Plain", replace="Again")), assistant(content="ok")]
-    post_stream("/chat", {"message": "write"})
+    post_stream("/chat", {"message": "write", "review": False})
     request("/track", json.dumps({"on": True}).encode())
-    assert post_stream("/chat", {"message": "edit"})[-1]["revisions"] == 2
+    assert post_stream("/chat", {"message": "edit", "review": False})[-1]["revisions"] == 2
     state = json.loads(request("/revisions", json.dumps({"action": "reject"}).encode()))
     assert state["revisions"] == 0 and [b["text"] for b in state["blocks"]] == ["Plain"]
-    post_stream("/chat", {"message": "edit again"})
+    post_stream("/chat", {"message": "edit again", "review": False})
     state = json.loads(request("/revisions", json.dumps({"action": "accept"}).encode()))
     assert state["revisions"] == 0 and [b["text"] for b in state["blocks"]] == ["Again"]
     assert "w:del" not in WordDocument(WordPackage.from_bytes(request("/download"))).read_part_xml("word/document.xml")
     with pytest.raises(urllib.error.HTTPError) as bad:
         request("/revisions", json.dumps({"action": "shred"}).encode())
     assert bad.value.code == 400
+
+
+def test_review_feedback_is_shown_and_fixed(ui):
+    llm, request, post_stream = ui
+    llm.turns = [assistant(paragraphs("Helo")), assistant(content="Done."),
+                 assistant(content='{"ok": false, "issues": ["b1 misspells Hello."]}'),
+                 assistant(call("replace_text", find="Helo", replace="Hello")), assistant(content="Fixed the typo."),
+                 assistant(content='{"ok": true}')]
+    events = post_stream("/chat", {"message": "say hello"})
+    reviews = [e for e in events if e["type"] == "review"]
+    assert [r["feedback"] for r in reviews] == ["1. b1 misspells Hello.", None]
+    assert events[-2] == {"type": "reply", "text": "Fixed the typo."}
+    assert [b["text"] for b in events[-1]["blocks"]] == ["Hello"]
+    assert llm.turns == []
+
+
+def test_approve_can_skip_review(ui):
+    llm, request, post_stream = ui
+    llm.turns = [assistant(content="1. Add a line.")]
+    post_stream("/chat", {"message": "write", "plan": True})
+    llm.turns = [assistant(paragraphs("Line")), assistant(content="ok")]
+    events = post_stream("/approve", {"review": False})
+    assert "review" not in [e["type"] for e in events]
+    assert llm.turns == [] and [b["text"] for b in events[-1]["blocks"]] == ["Line"]

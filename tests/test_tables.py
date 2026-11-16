@@ -561,7 +561,7 @@ async def test_agent_run_edits_a_merged_table_under_track_changes():
         ),
         assistant(content="Added a Total column. The merge could not be tracked."),
     ])
-    result = await create_agent(doc, llm=llm).arun("Add a Total column and merge D with E")
+    result = await create_agent(doc, llm=llm, review=False).arun("Add a Total column and merge D with E")
     tool_results = [m["content"] for m in result.messages if m["role"] == "tool"]
     assert '"merged"' in tool_results[0] and tool_results[1].startswith("Inserted column 3")
     assert tool_results[2].startswith("Error:") and "track changes switched off" in tool_results[2]

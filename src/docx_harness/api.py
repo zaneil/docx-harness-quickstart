@@ -10,6 +10,7 @@ from .agent.harness import Agent, AgentResult, ApproveCallback, EventCallback, _
 from .agent.llm import LLMClient, OpenRouterClient
 from .agent.prompts import TRACK_CHANGES_PROMPT, WORD_SYSTEM_PROMPT
 from .document import WordDocument
+from .review import DocumentReviewer
 from .tools import Tool, ToolRegistry, default_tools
 
 
@@ -24,6 +25,9 @@ def create_agent(
     system_prompt: str | None = None,
     max_steps: int = 40,
     on_event: EventCallback | None = None,
+    review: bool = True,
+    review_llm: LLMClient | None = None,
+    max_reviews: int = 2,
 ) -> Agent:
     """Build an Agent with the default Word tools bound to ``doc``.
 
@@ -32,6 +36,11 @@ def create_agent(
     the default Word prompt, plus redlining guidance when ``doc`` tracks changes.
     ``image_root`` limits the ``insert_image`` tool to files inside that folder;
     by default it can read any image file the process can.
+
+    With ``review`` (the default), once the agent has finished a change a
+    reviewer reads the whole document against the request and the agent fixes
+    what it reports, for up to ``max_reviews`` rounds. The reviewer uses the
+    agent's own client unless ``review_llm`` is given.
     """
     if system_prompt is None:
         system_prompt = WORD_SYSTEM_PROMPT
@@ -40,12 +49,15 @@ def create_agent(
     registry = ToolRegistry(default_tools(doc, include_raw=include_raw, image_root=image_root))
     for item in extra_tools:
         registry.register(item)
+    llm = llm or OpenRouterClient(model=model)
     return Agent(
-        llm or OpenRouterClient(model=model),
+        llm,
         registry,
         system_prompt=system_prompt,
         max_steps=max_steps,
         on_event=on_event,
+        reviewer=DocumentReviewer(doc, review_llm or llm) if review else None,
+        max_reviews=max_reviews,
     )
 
 

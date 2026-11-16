@@ -226,12 +226,12 @@ def test_tools_and_agent_use_tracking():
     assert registry.get("list_revisions").read_only
 
     llm = ScriptedLLM([assistant(call("replace_text", find="Goodbye", replace="Hi")), assistant(content="done")])
-    create_agent(doc, llm=llm).run("greet differently")
+    create_agent(doc, llm=llm, review=False).run("greet differently")
     assert TRACK_CHANGES_PROMPT in llm.requests[0]["messages"][0]["content"]
     assert doc.text() == "Hi big world!"
 
     plain = ScriptedLLM([assistant(content="done")])
-    create_agent(WordDocument.open(), llm=plain).run("hi")
+    create_agent(WordDocument.open(), llm=plain, review=False).run("hi")
     assert TRACK_CHANGES_PROMPT not in plain.requests[0]["messages"][0]["content"]
 
 

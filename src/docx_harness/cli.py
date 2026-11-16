@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .agent import AgentEvent, Plan
+from .agent import AgentEvent, OpenRouterClient, Plan
 from .api import draft
 
 
@@ -23,6 +23,14 @@ def _printer(verbose: bool):
             print(f"  → {event.data['name']} {arguments}", file=sys.stderr)
         elif event.type == "tool_result" and verbose:
             print(f"    {event.data['result'][:500]}", file=sys.stderr)
+        elif event.type == "review":
+            if event.data.get("error"):
+                print(f"  review failed: {event.data['error']}", file=sys.stderr)
+            elif event.data.get("feedback"):
+                feedback = event.data["feedback"].replace("\n", "\n    ")
+                print(f"  review found problems; fixing:\n    {feedback}", file=sys.stderr)
+            else:
+                print("  review: no problems found", file=sys.stderr)
 
     return on_event
 
@@ -53,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--track-changes", action="store_true", help="Record the edits as tracked changes (redlines) to accept or reject in Word.")
     parser.add_argument("--author", help="Author name on tracked changes (default: docx-harness).")
     parser.add_argument("--raw", action="store_true", help="Also give the agent the raw XML write tool.")
+    parser.add_argument("--no-review", action="store_true", help="Skip the review: by default a reviewer checks the finished document against the request and the agent fixes what it finds.")
+    parser.add_argument("--review-model", help="OpenRouter model id for the reviewer (default: the agent's model).")
     parser.add_argument("--max-steps", type=int, default=40, help="Maximum model calls (default: 40).")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show full tool calls and results.")
     args = parser.parse_args(argv)
@@ -77,6 +87,8 @@ def main(argv: list[str] | None = None) -> int:
             include_raw=args.raw,
             max_steps=args.max_steps,
             on_event=_printer(args.verbose),
+            review=not args.no_review,
+            review_llm=OpenRouterClient(model=args.review_model) if args.review_model and not args.no_review else None,
         )
     except Exception as exc:  # noqa: BLE001 - top-level CLI error report
         print(f"error: {exc}", file=sys.stderr)

@@ -88,19 +88,24 @@ def cmd_run(args) -> int:
         args.judge_model or os.environ.get("DOCX_HARNESS_JUDGE_MODEL") or DEFAULT_JUDGE_MODEL)
     judge_llm = OpenRouterClient(model=judge_model) if judge_model and any(t.judge for t in tasks) else None
     models = args.model or [os.environ.get("DOCX_HARNESS_MODEL") or DEFAULT_MODEL]
+    review = not args.no_review
+    review_model = args.review_model if review else None
+    make_review_llm = (lambda: OpenRouterClient(model=review_model)) if review_model else None
     worst = 0
     for model in models:
         started = datetime.now(timezone.utc)
-        out_dir = Path(args.out or RESULTS_DIR) / f"{started:%Y%m%d-%H%M%S}_{re.sub(r'[^A-Za-z0-9.]+', '-', model)}"
-        print(f"Running {len(tasks)} task(s) on {model}; output in {out_dir}\n", file=sys.stderr)
+        label = report.label(model, review, review_model)
+        out_dir = Path(args.out or RESULTS_DIR) / f"{started:%Y%m%d-%H%M%S}_{re.sub(r'[^A-Za-z0-9.]+', '-', label).strip('-')}"
+        print(f"Running {len(tasks)} task(s) on {label}; output in {out_dir}\n", file=sys.stderr)
         results = asyncio.run(run_suite(
             tasks, lambda: OpenRouterClient(model=model), out_dir, judge_llm=judge_llm,
             concurrency=args.jobs, timeout=args.timeout,
             on_result=lambda r: print(report.task_line(r), file=sys.stderr),
+            review=review, make_review_llm=make_review_llm,
         ))
         report.write_results(out_dir / "results.json", model, results, judge_model if judge_llm else None,
-                             started.isoformat(timespec="seconds"))
-        print("\n" + report.console(model, results) + "\n")
+                             started.isoformat(timespec="seconds"), review=review, review_model=review_model)
+        print("\n" + report.console(label, results) + "\n")
         worst = max(worst, 0 if all(r.passed for r in results) else 1)
     return worst
 
@@ -112,7 +117,7 @@ def cmd_report(args) -> int:
         return 0
     for run in runs:
         s = run["summary"]
-        print(f"{run['model']}: {s['passed']}/{s['tasks']} passed, {s['mean_steps']} steps per task, "
+        print(f"{report.label_of(run)}: {s['passed']}/{s['tasks']} passed, {s['mean_steps']} steps per task, "
               f"{s['prompt_tokens'] + s['completion_tokens']} tokens, cost {report._money(s['cost'])}, "
               f"judge {s['mean_judge_score']}")
         for task in run["tasks"]:
@@ -144,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("-j", "--jobs", type=int, default=4, help="Tasks to run at once (default: 4).")
     run.add_argument("--no-judge", action="store_true", help="Skip the judge model.")
     run.add_argument("--judge-model", help=f"Judge model (default: $DOCX_HARNESS_JUDGE_MODEL or {DEFAULT_JUDGE_MODEL}).")
+    run.add_argument("--no-review", action="store_true", help="Run without the review step (it is on by default).")
+    run.add_argument("--review-model", help="Reviewer model (default: the model under test).")
     run.add_argument("--timeout", type=float, default=600, help="Seconds allowed per task (default: 600).")
     run.add_argument("--out", help="Folder for results (default: evals/results).")
     rep = add("report", cmd_report, "Summarise results.json files.", filters=False)

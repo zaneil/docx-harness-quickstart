@@ -20,7 +20,7 @@ async def test_loop_runs_tools_until_text_reply(doc):
         assistant(content="Added two paragraphs."),
     ])
     events = []
-    agent = create_agent(doc, llm=llm, on_event=events.append)
+    agent = create_agent(doc, llm=llm, review=False, on_event=events.append)
     result = await agent.arun("write hello world")
 
     assert result.status == "completed"
@@ -39,14 +39,14 @@ async def test_tool_errors_go_back_to_the_model(doc):
         assistant(call("update_paragraph", block_id="b42", text="x")),
         assistant(content="Could not find it."),
     ])
-    result = await create_agent(doc, llm=llm).arun("edit")
+    result = await create_agent(doc, llm=llm, review=False).arun("edit")
     assert result.messages[3]["content"].startswith("Error: No block with id 'b42'")
     assert result.status == "completed"
 
 
 async def test_max_steps(doc):
     llm = ScriptedLLM([assistant(call("get_outline"), content="looking")] * 3)
-    result = await create_agent(doc, llm=llm, max_steps=3).arun("loop forever")
+    result = await create_agent(doc, llm=llm, review=False, max_steps=3).arun("loop forever")
     assert result.status == "max_steps"
     assert result.steps == 3
     assert result.final_text == "looking"
@@ -67,7 +67,7 @@ async def test_plan_mode_is_read_only_then_executes(doc):
         seen.append((plan.text, doc.text()))
         return True
 
-    result = await create_agent(doc, llm=llm).arun("greet", plan_mode=True, approve=approve)
+    result = await create_agent(doc, llm=llm, review=False).arun("greet", plan_mode=True, approve=approve)
 
     # at approval time nothing had been written
     assert seen == [("1. Add a greeting paragraph.", "")]
@@ -90,7 +90,7 @@ async def test_plan_mode_is_read_only_then_executes(doc):
 
 async def test_plan_rejected_changes_nothing(doc, tmp_path):
     llm = ScriptedLLM([assistant(content="1. Delete everything.")])
-    result = await create_agent(doc, llm=llm).arun("x", plan_mode=True, approve=lambda plan: False)
+    result = await create_agent(doc, llm=llm, review=False).arun("x", plan_mode=True, approve=lambda plan: False)
     assert result.status == "rejected"
     assert llm.turns == [] and len(llm.requests) == 1
 
@@ -113,7 +113,7 @@ async def test_plan_revision_with_async_approver(doc):
     async def approve(plan):
         return next(decisions)
 
-    result = await create_agent(doc, llm=llm).arun("write", plan_mode=True, approve=approve)
+    result = await create_agent(doc, llm=llm, review=False).arun("write", plan_mode=True, approve=approve)
     assert result.plan.text == "1. Add two paragraphs."
     assert doc.text() == "a\nb"
     revise_request = llm.requests[1]["messages"]
@@ -123,7 +123,7 @@ async def test_plan_revision_with_async_approver(doc):
 
 async def test_plan_auto_approved_without_callback(doc):
     llm = ScriptedLLM([assistant(content="plan"), assistant(paragraphs("x")), assistant(content="ok")])
-    result = await create_agent(doc, llm=llm).arun("write", plan_mode=True)
+    result = await create_agent(doc, llm=llm, review=False).arun("write", plan_mode=True)
     assert result.status == "completed" and doc.text() == "x"
 
 
@@ -171,14 +171,14 @@ async def test_read_only_calls_run_concurrently_and_writes_in_order():
 
 def test_sync_wrappers(doc):
     llm = ScriptedLLM([assistant(content="plan"), assistant(paragraphs("x")), assistant(content="ok")])
-    agent = create_agent(doc, llm=llm)
+    agent = create_agent(doc, llm=llm, review=False)
     plan = agent.plan("write")           # each sync call uses its own event loop
     result = agent.execute(plan)
     assert result.final_text == "ok" and doc.text() == "x"
 
 
 async def test_sync_wrapper_inside_event_loop_explains_itself(doc):
-    agent = create_agent(doc, llm=ScriptedLLM([]))
+    agent = create_agent(doc, llm=ScriptedLLM([]), review=False)
     with pytest.raises(RuntimeError, match="async methods"):
         agent.run("x")
 
@@ -191,7 +191,7 @@ async def test_adraft_edits_existing_file_and_adraft_many(tmp_path):
 
     out = tmp_path / "out.docx"
     llm = ScriptedLLM([assistant(call("replace_text", find="Old", replace="New")), assistant(content="ok")])
-    await adraft("update", source, out, llm=llm)
+    await adraft("update", source, out, llm=llm, review=False)
     assert WordDocument.open(out).text() == "New text"
     assert WordDocument.open(source).text() == "Old text"
 
@@ -203,7 +203,7 @@ async def test_adraft_edits_existing_file_and_adraft_many(tmp_path):
         {"instruction": "c", "output_path": tmp_path / "c.docx",
          "llm": ScriptedLLM([assistant(paragraphs("C")), assistant(content="ok")])},
     ]
-    results = await adraft_many(jobs, concurrency=2)
+    results = await adraft_many(jobs, concurrency=2, review=False)
     assert results[0].status == "completed" and results[2].status == "completed"
     assert isinstance(results[1], AssertionError)
     assert WordDocument.open(tmp_path / "a.docx").text() == "A"
@@ -243,7 +243,7 @@ async def test_planning_step_budget_forces_a_plan(doc):
         [assistant(call("read_blocks", count=n)) for n in (1, 2)]
         + [assistant(content="1. The plan."), assistant(content="executed")]
     )
-    agent = create_agent(doc, llm=llm)
+    agent = create_agent(doc, llm=llm, review=False)
     agent.max_plan_steps = 3
     result = await agent.arun("x", plan_mode=True)
     assert result.plan.text == "1. The plan."

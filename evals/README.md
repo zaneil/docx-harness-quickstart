@@ -8,12 +8,15 @@ uv run python -m evals check                        # offline: prove every task 
 uv run python -m evals run                          # live, default model (needs OPENROUTER_API_KEY)
 uv run python -m evals run --model openai/gpt-4.1 --model anthropic/claude-sonnet-4.5
 uv run python -m evals run -k typos --no-judge      # only tasks whose id contains "typos", no judge model
+uv run python -m evals run --no-review              # without the review step, to compare
 uv run python -m evals report evals/results/<run> --markdown    # the README table
 ```
 
 A live run writes `evals/results/<time>_<model>/` (gitignored): `results.json`, and for each task `input.docx`, `output.docx` and `trace.json` (every message and tool call). Open the output and the trace when a task fails, to tell a model mistake from a wrong check.
 
 A task passes when every check passes. The judge score (1 to 5) is reported beside it and never decides a pass.
+
+Runs use the review step, as the CLI and `create_agent` do by default; its calls count toward each task's tokens and cost, and the `fixes` column shows how many review rounds found something to fix. `--no-review` turns it off (the run is labelled "(no review)"), and `--review-model` reviews with another model.
 
 ## Add a task
 

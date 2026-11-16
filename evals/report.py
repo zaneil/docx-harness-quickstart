@@ -33,13 +33,31 @@ def summarize(results: list[TaskResult | dict]) -> dict:
         "completion_tokens": sum(r["completion_tokens"] for r in rows),
         "cost": round(sum(costs), 4) if costs else None,
         "mean_judge_score": round(sum(scores) / len(scores), 2) if scores else None,
+        #: Tasks where the reviewer found something to fix.
+        "reviewed_fixes": sum(1 for r in rows if any(r.get("reviews") or [])),
         "seconds": round(sum(r["seconds"] for r in rows), 1),
     }
 
 
-def write_results(path: Path, model: str, results: list[TaskResult], judge_model: str | None, started: str) -> dict:
+def label(model: str, review: bool, review_model: str | None = None) -> str:
+    """How a run is named in tables and folder names."""
+    if not review:
+        return f"{model} (no review)"
+    return f"{model} (review by {review_model})" if review_model and review_model != model else model
+
+
+def label_of(run: dict) -> str:
+    """The label of a loaded ``results.json``. Runs from before the review
+    step existed had none."""
+    return label(run["model"], run.get("review", False), run.get("review_model"))
+
+
+def write_results(path: Path, model: str, results: list[TaskResult], judge_model: str | None, started: str,
+                  *, review: bool = True, review_model: str | None = None) -> dict:
     data = {
         "model": model,
+        "review": review,
+        "review_model": review_model,
         "judge_model": judge_model,
         "started": started,
         "summary": summarize(results),
@@ -67,9 +85,12 @@ def task_line(result: TaskResult) -> str:
     """One line for a finished task, followed by what failed."""
     mark = "PASS" if result.passed else "FAIL"
     judge = f"  judge {result.judge_score}/5" if result.judge_score is not None else ""
-    lines = [f"{mark}  {result.id}  ({result.steps} steps, {result.seconds}s){judge}"]
+    fixes = sum(1 for feedback in result.reviews if feedback)
+    review = f"  {fixes} review fix round{'s' * (fixes != 1)}" if fixes else ""
+    lines = [f"{mark}  {result.id}  ({result.steps} steps, {result.seconds}s){judge}{review}"]
     if result.error:
         lines.append(f"      error: {result.error}")
+    lines += [f"      review failed: {error[:200]}" for error in result.review_errors]
     lines += [f"      {c['name']}: {c['message']}" for c in result.failed_checks]
     return "\n".join(lines)
 
@@ -78,7 +99,8 @@ def console(model: str, results: list[TaskResult]) -> str:
     """A per-task table and the totals."""
     rows = [
         [r.category, r.id, "pass" if r.passed else "FAIL",
-         f"{sum(c['passed'] for c in r.checks)}/{len(r.checks)}", r.steps, r.tool_errors,
+         f"{sum(c['passed'] for c in r.checks)}/{len(r.checks)}", r.steps,
+         sum(1 for feedback in r.reviews if feedback), r.tool_errors,
          _tokens(r.prompt_tokens + r.completion_tokens), _money(r.cost),
          "" if r.judge_score is None else f"{r.judge_score}/5"]
         for r in results
@@ -87,10 +109,10 @@ def console(model: str, results: list[TaskResult]) -> str:
     judge = "" if s["mean_judge_score"] is None else f", judge {s['mean_judge_score']}/5"
     total = (
         f"{model}: {s['passed']}/{s['tasks']} passed ({s['pass_rate']:.0%}), "
-        f"{s['mean_steps']} steps per task, {_tokens(s['prompt_tokens'] + s['completion_tokens'])} tokens, "
+        f"{s['mean_steps']} steps per task, {s['reviewed_fixes']} task(s) fixed after review, {_tokens(s['prompt_tokens'] + s['completion_tokens'])} tokens, "
         f"{_money(s['cost'])}{judge}"
     )
-    header = ["category", "task", "result", "checks", "steps", "tool errors", "tokens", "cost", "judge"]
+    header = ["category", "task", "result", "checks", "steps", "fixes", "tool errors", "tokens", "cost", "judge"]
     return _table(header, rows) + "\n\n" + total
 
 
@@ -108,7 +130,7 @@ def markdown(runs: list[dict]) -> str:
             for c in categories
         ]
         cells = [
-            f"`{run['model']}`",
+            f"`{run['model']}`" + label_of(run)[len(run["model"]):],
             f"{s['passed']}/{s['tasks']} ({s['pass_rate']:.0%})",
             *per_category,
             str(s["mean_steps"]),

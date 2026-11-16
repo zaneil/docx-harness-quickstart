@@ -35,6 +35,8 @@
   .msg.plan b { display: block; margin-bottom: 4px; color: var(--accent); }
   .msg.plan .actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .msg.plan .actions span { color: var(--muted); font-size: 12px; }
+  .msg.review { align-self: stretch; max-width: 100%; border: 1px dashed var(--accent); font-size: 13px; }
+  .msg.review b { display: block; margin-bottom: 4px; color: var(--accent); }
   .tool { align-self: flex-start; color: var(--muted); font: 12px/1.4 ui-monospace, Menlo, monospace; overflow-wrap: anywhere; }
   .error { align-self: flex-start; color: var(--err); font-size: 13px; overflow-wrap: anywhere; }
   .hint { color: var(--muted); text-align: center; margin: auto 0; padding: 0 16px; }
@@ -82,6 +84,7 @@
     <textarea id="input" placeholder="e.g. Draft a one page proposal for a team offsite with a budget table" autofocus></textarea>
     <div class="row">
       <label class="check"><input type="checkbox" id="plan"> Plan first</label>
+      <label class="check" title="After a change, a reviewer checks the whole document against the request and the agent fixes what it finds"><input type="checkbox" id="review" checked> Review</label>
       <label class="check"><input type="checkbox" id="track"> Track changes</label>
       <button class="primary" id="send">Send</button>
     </div>
@@ -125,6 +128,7 @@ function setBusy(value) {
   $("send").textContent = value ? "Working…" : "Send";
   $("plan").disabled = value || pending;
   $("track").disabled = value;
+  $("review").disabled = value;
   input.placeholder = pending ? "Type feedback to revise the plan, or approve it above" : "Describe what to write or change";
 }
 
@@ -137,7 +141,7 @@ function addPlan(text) {
   const approve = document.createElement("button"); approve.className = "primary"; approve.textContent = "Approve and run";
   const discard = document.createElement("button"); discard.textContent = "Discard";
   const tip = document.createElement("span"); tip.textContent = "or type feedback below to revise it";
-  approve.onclick = () => { actions.remove(); stream("/approve", null); };
+  approve.onclick = () => { actions.remove(); stream("/approve", { review: $("review").checked }); };
   discard.onclick = async () => { actions.remove(); render(await post("/discard")); add("tool", "plan discarded"); };
   actions.append(approve, discard, tip);
   box.append(title, body, actions);
@@ -152,6 +156,16 @@ function handle(event) {
   else if (event.type === "error") add("error", "Error: " + event.text);
   else if (event.type === "reply") add("msg agent", event.text);
   else if (event.type === "plan") addPlan(event.text);
+  else if (event.type === "review") {
+    if (event.error) add("error", "Review failed: " + event.error);
+    else if (!event.feedback) add("tool", "review: no problems found");
+    else {
+      const box = add("msg review", "");
+      const title = document.createElement("b"); title.textContent = "Review: fixing these";
+      const body = document.createElement("div"); body.textContent = event.feedback;
+      box.append(title, body);
+    }
+  }
   else if (event.type === "state") render(event);
 }
 
@@ -298,7 +312,7 @@ $("form").onsubmit = event => {
   if (!message || busy) return;
   input.value = "";
   add("msg user", message);
-  stream("/chat", { message, plan: $("plan").checked });
+  stream("/chat", { message, plan: $("plan").checked, review: $("review").checked });
 };
 input.onkeydown = event => {
   if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("form").requestSubmit(); }

@@ -59,7 +59,12 @@ uv run docx-harness "Restructure this into an executive summary plus appendix" -
 
 # Tracked changes: every edit is saved as a redline to accept or reject in Word
 uv run docx-harness "Shorten the payment terms to 30 days and fix the typos" -i contract.docx -o contract-redline.docx --track-changes --author "Review Agent"
+
+# Skip the review step (on by default, see below)
+uv run docx-harness "Add a closing paragraph" -i memo.docx -o memo-v2.docx --no-review
 ```
+
+Once the agent has made its changes, a reviewer reads the whole document against the request (every requirement done, nothing else changed, no invented facts or placeholders, real heading and list styles) and the agent fixes what it reports, for up to two rounds. The reviewer uses the same model unless you pass `--review-model` (`review_llm=` in Python); turn it off with `--no-review` (`review=False`). It costs one extra model call per round, and more when there is something to fix.
 
 Python:
 
@@ -84,7 +89,7 @@ draft("Make the tone more formal", "memo.docx", "memo-redline.docx", track_chang
 uv run docx-harness-ui        # opens http://127.0.0.1:8765
 ```
 
-A small local page with a chat on the left and a live preview of the document on the right. Start from the blank template or upload a `.docx`, keep chatting to refine it (the conversation and block ids carry over between messages), tick **Plan first** to review a plan before anything changes, and download the result. It is a test tool: one in-memory session, standard library only, bound to localhost. The preview is approximate; open the downloaded file in Word for the real rendering.
+A small local page with a chat on the left and a live preview of the document on the right. Start from the blank template or upload a `.docx`, keep chatting to refine it (the conversation and block ids carry over between messages), tick **Plan first** to review a plan before anything changes, untick **Review** to skip the review step, and download the result. It is a test tool: one in-memory session, standard library only, bound to localhost. The preview is approximate; open the downloaded file in Word for the real rendering.
 
 To continue a conversation in your own code, pass the previous result's messages back in: `agent.arun("now make it shorter", history=result.messages)`.
 
@@ -183,7 +188,8 @@ Tool schemas are in OpenAI function-calling format. Tool errors are returned to 
 
 - **Plan mode.** `agent.arun(instruction, plan_mode=True, approve=callback)` first runs with read-only tools only, returns a plan, and executes it only after `approve(plan)` returns `True`. Returning a string sends feedback for a revised plan; returning `False` cancels. Mutating tools are blocked by the registry during planning, not just by the prompt. `aplan()` and `aexecute()` are available separately.
 - **Async.** The loop is async (`arun`, `aplan`, `aexecute`), with sync wrappers (`run`, `plan`, `execute`) for scripts. When the model issues several tool calls in one turn, read-only calls run concurrently and mutating calls run in order. `adraft_many` processes several documents concurrently.
-- **Events.** Pass `on_event` to observe model replies, tool calls and results.
+- **Review.** `Agent(..., reviewer=..., max_reviews=2)`: once a run has changed something, `reviewer.review(instruction, summary)` returns feedback (or None) and the model gets it as a new message to act on. Any object with `begin(instruction)` and `review(...)` works (the `Reviewer` protocol); `create_agent` uses `DocumentReviewer` from `docx_harness.review`, which shows a model the document before and after with word counts per paragraph. All rounds share the `max_steps` budget.
+- **Events.** Pass `on_event` to observe model replies, tool calls, results and review rounds.
 
 ## Extending
 

@@ -14,17 +14,40 @@ import asyncio
 import inspect
 import json
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Union
+from typing import Any, Awaitable, Callable, Protocol, Union, runtime_checkable
 
 from ..tools.registry import ToolRegistry
 from .llm import LLMClient
-from .prompts import EXECUTE_PLAN_PROMPT, GENERIC_SYSTEM_PROMPT, PLAN_MODE_PROMPT, REVISE_PLAN_PROMPT
+from .prompts import (
+    EXECUTE_PLAN_PROMPT,
+    GENERIC_SYSTEM_PROMPT,
+    PLAN_MODE_PROMPT,
+    REVIEW_FEEDBACK_PROMPT,
+    REVISE_PLAN_PROMPT,
+)
+
+
+@runtime_checkable
+class Reviewer(Protocol):
+    """Checks the agent's work once it has finished and returns feedback for
+    it to act on, or None when there is nothing to fix.
+
+    ``begin`` is called before the agent changes anything, so a reviewer can
+    remember the starting state. The harness reviews only runs that changed
+    something (called at least one tool that is not read-only).
+    """
+
+    def begin(self, instruction: str) -> Any: ...
+
+    async def review(self, instruction: str, summary: str) -> str | None: ...
 
 
 @dataclass
 class AgentEvent:
     """Something that happened in the loop. ``type`` is one of:
-    ``assistant`` (model reply), ``tool_call``, ``tool_result``, ``plan``."""
+    ``assistant`` (model reply), ``tool_call``, ``tool_result``, ``plan``,
+    ``review`` (``{"round", "feedback"}``; feedback None means no problems,
+    and ``error`` is set when the reviewer itself failed)."""
 
     type: str
     data: dict
@@ -49,6 +72,9 @@ class AgentResult:
     #: "completed", "max_steps" (ran out of steps) or "rejected" (plan not approved).
     status: str = "completed"
     plan: Plan | None = None
+    #: The reviewer's feedback for each review round, None for a round that
+    #: found no problems. Empty when there was no review.
+    reviews: list[str | None] = field(default_factory=list)
 
 
 #: ``approve(plan)`` returns True to execute, False to cancel, or a string of
@@ -69,6 +95,8 @@ class Agent:
         max_plan_steps: int = 8,
         max_plan_revisions: int = 5,
         on_event: EventCallback | None = None,
+        reviewer: Reviewer | None = None,
+        max_reviews: int = 2,
     ):
         self.llm = llm
         self.tools = tools
@@ -80,6 +108,11 @@ class Agent:
         self.max_plan_steps = max_plan_steps
         self.max_plan_revisions = max_plan_revisions
         self.on_event = on_event
+        #: Checks the finished work; its feedback goes back to the model for
+        #: at most ``max_reviews`` rounds of fixes.
+        self.reviewer = reviewer
+        self.max_reviews = max_reviews
+        self._changed = False
 
     # ------------------------------------------------------------ public API
 
@@ -102,8 +135,7 @@ class Agent:
         """
         if not plan_mode:
             messages = _start(self.system_prompt, history, instruction)
-            text, steps, status = await self._loop(messages, read_only=False)
-            return AgentResult(text, steps, messages, status)
+            return await self._act(messages, instruction)
 
         plan = await self.aplan(instruction, history=history)
         revisions = 0
@@ -145,8 +177,10 @@ class Agent:
         conversation is kept, so what the model already read is not re-read."""
         messages = [{"role": "system", "content": self.system_prompt}, *plan.messages[1:]]
         messages.append({"role": "user", "content": EXECUTE_PLAN_PROMPT})
-        text, steps, status = await self._loop(messages, read_only=False)
-        return AgentResult(text, plan.steps + steps, messages, status, plan)
+        result = await self._act(messages, plan.instruction)
+        result.steps += plan.steps
+        result.plan = plan
+        return result
 
     # Synchronous conveniences. Inside a running event loop (Jupyter, FastAPI)
     # use the a* coroutines instead.
@@ -161,12 +195,47 @@ class Agent:
 
     # ------------------------------------------------------------------ loop
 
-    async def _loop(self, messages: list[dict], *, read_only: bool) -> tuple[str, int, str]:
+    async def _act(self, messages: list[dict], instruction: str) -> AgentResult:
+        """Run the loop with the full tool set, then let the reviewer check
+        the work and the model fix what it reports. All rounds share one
+        ``max_steps`` budget."""
+        reviewer = self.reviewer
+        if reviewer is not None:
+            try:
+                await _maybe_await(reviewer.begin(instruction))
+            except Exception as exc:  # noqa: BLE001 - a broken reviewer must not stop the work
+                await self._emit("review", {"round": 0, "feedback": None, "error": f"{type(exc).__name__}: {exc}"})
+                reviewer = None
+        self._changed = False
+        text, steps, status = await self._loop(messages, read_only=False)
+        reviews: list[str | None] = []
+        while (reviewer is not None and status == "completed" and self._changed
+               and len(reviews) < self.max_reviews and steps < self.max_steps):
+            round_ = len(reviews) + 1
+            try:
+                feedback = await _maybe_await(reviewer.review(instruction, text))
+            except Exception as exc:  # noqa: BLE001 - keep the work, report the failed review
+                await self._emit("review", {"round": round_, "feedback": None, "error": f"{type(exc).__name__}: {exc}"})
+                break
+            feedback = str(feedback).strip() if feedback else None
+            reviews.append(feedback)
+            await self._emit("review", {"round": round_, "feedback": feedback})
+            if feedback is None:
+                break
+            messages.append({"role": "user", "content": REVIEW_FEEDBACK_PROMPT.format(feedback=feedback)})
+            self._changed = False  # review the next round only if the model changed something
+            more_text, more_steps, status = await self._loop(messages, read_only=False, limit=self.max_steps - steps)
+            text = more_text or text
+            steps += more_steps
+        return AgentResult(text, steps, messages, status, reviews=reviews)
+
+    async def _loop(self, messages: list[dict], *, read_only: bool, limit: int | None = None) -> tuple[str, int, str]:
         """Call the model, run its tool calls, repeat until it answers in text.
         Appends to ``messages`` in place. Returns (final text, steps, status)."""
         schema = self.tools.to_openai_schema(read_only=read_only) or None
         last_text = ""
-        limit = min(self.max_steps, self.max_plan_steps) if read_only else self.max_steps
+        if limit is None:
+            limit = min(self.max_steps, self.max_plan_steps) if read_only else self.max_steps
         self._seen_reads: dict[tuple[str, str], str] = {}
         for step in range(1, limit + 1):
             # Planning must end in a plan: on the final step offer no tools.
@@ -223,8 +292,9 @@ class Agent:
                 self._seen_reads[key] = result
         else:
             result = await self.tools.aexecute(name, arguments, read_only=read_only)
-            if not read_only:
+            if not read_only and not result.startswith("Error:"):
                 self._seen_reads.clear()  # state changed; reads are fresh again
+                self._changed = True
         await self._emit("tool_result", {"id": call["id"], "name": name, "result": result})
         return result
 

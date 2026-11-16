@@ -12,6 +12,7 @@ import json
 import re
 
 from docx_harness import LLMClient, WordDocument
+from docx_harness.review import describe
 
 DEFAULT_JUDGE_MODEL = "openai/gpt-4.1"
 
@@ -28,33 +29,6 @@ Scores:
 1 = fails it or the document is unusable
 
 Reply with one JSON object and nothing else: {"score": <1-5>, "reason": "<one or two sentences>"}"""
-
-
-def describe(doc: WordDocument, limit: int = 12000) -> str:
-    """The document as plain text for the judge: one line per block with its
-    style, table rows, headers and footers, and any pending tracked changes."""
-    lines = []
-    for block in doc.read(count=10**9)["blocks"]:
-        if block["type"] == "table":
-            lines.append("[Table]")
-            lines += ["  " + " | ".join(row) for row in block["rows"]]
-            continue
-        label = block.get("style") or block["type"]
-        if "list" in block:
-            label += f", {block['list']['kind']} level {block['list']['level']}"
-        text = block.get("text", "")
-        for found in block.get("links", []):
-            text += f" (link: {found['text']} -> {found['url']})"
-        lines.append(f"[{label}] {text}")
-    for story in doc.stories():
-        if story["kind"] in ("header", "footer") and any(p.strip() for p in story["paragraphs"]):
-            lines.append(f"[{story['kind']}] " + " / ".join(story["paragraphs"]))
-    revisions = doc.revisions()
-    if revisions:
-        lines.append(f"Tracked changes pending ({len(revisions)}):")
-        lines += [f"  {r['type']} by {r['author']}: {r['text'] or r.get('target', '')!r}" for r in revisions[:60]]
-    text = "\n".join(lines) or "(empty document)"
-    return text if len(text) <= limit else text[:limit] + "\n... (truncated)"
 
 
 def parse_reply(content: str | None) -> tuple[int | None, str]:

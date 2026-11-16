@@ -14,7 +14,7 @@ Three layers with a strict one-way dependency: `agent` → `tools` → `document
 | Tools | `src/docx_harness/tools/` | LLM-callable functions with JSON schemas | `agent` |
 | Agent | `src/docx_harness/agent/` | Generic async tool-calling loop, plan mode, LLM client | `document` (it knows nothing about Word) |
 
-`src/docx_harness/api.py` wires the three together (`create_agent`, `draft`, `adraft`, `adraft_many`). `cli.py` and `ui/` are thin front ends over `api.py`.
+`src/docx_harness/api.py` wires the three together (`create_agent`, `draft`, `adraft`, `adraft_many`). `src/docx_harness/review.py` is the Word side of the review step (on by default): `DocumentReviewer` implements the harness `Reviewer` protocol (`begin`, `review`), so the harness itself still knows nothing about Word. `cli.py` and `ui/` are thin front ends over `api.py`.
 
 ## Commands
 
@@ -30,7 +30,7 @@ uv run python -m evals check              # offline: every eval task fails untou
 uv run python -m evals run -k fix-typos   # live eval on a real model; needs OPENROUTER_API_KEY and costs tokens
 ```
 
-Run `uv run pytest` before finishing any change. Tests use a scripted fake model (`ScriptedLLM` in `tests/conftest.py`), so they never call a real API.
+Run `uv run pytest` before finishing any change. Tests use a scripted fake model (`ScriptedLLM` in `tests/conftest.py`), so they never call a real API. The review step is on by default and makes one more model call after a run that changed something: give the script a reviewer turn (`assistant(content='{"ok": true}')`) or pass `review=False` to `create_agent`.
 
 ## Where to make a change
 
@@ -42,6 +42,7 @@ Run `uv run pytest` before finishing any change. Tests use a scripted fake model
 | Change how the loop runs, plan mode, concurrency | `agent/harness.py` | `tests/test_harness.py` |
 | Use another model or provider | Implement `LLMClient.acomplete` (see `agent/llm.py`), or use `OpenAICompatibleClient(model, api_key=..., base_url=...)` | `tests/test_harness.py` |
 | Change what the model is told | `agent/prompts.py` | live run |
+| Change the review step (what the reviewer checks, what it is shown, how feedback is phrased) | `review.py` (`REVIEW_PROMPT`, `describe`, `DocumentReviewer`), `REVIEW_FEEDBACK_PROMPT` in `agent/prompts.py`, the round loop in `Agent._act` | `tests/test_review.py`, then a live eval run |
 | Add styles to new documents, or well-known styles added to files that lack them | `document/builtin_styles.py` (`TEMPLATE` goes into `blank.docx`, `EXTRA` is created on demand), then rerun `scripts/build_template.py` | `tests/test_content.py` |
 | Change lists (levels, restarts, the list definitions) | `document/numbering.py`; `_place_in_list`, `set_list_level`, `restart_numbering` in `document/document.py` | `tests/test_content.py` |
 | Change hyperlinks, pictures, headers and footers | `document/document.py` (`add_hyperlink`, `insert_image`, `_set_header_footer`), `document/images.py`; new parts and relationships go through `WordPackage.add_part` / `relate` | `tests/test_content.py`, `tests/test_package.py` |

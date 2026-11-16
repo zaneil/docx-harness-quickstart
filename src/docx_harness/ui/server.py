@@ -99,15 +99,18 @@ def make_handler(session: Session, model_label: str):
                     emit({"type": "error", "text": str(exc) or type(exc).__name__})
                 emit({"type": "state", **session.state()})
 
-        def _agent(self, emit):
+        def _agent(self, emit, review: bool = True):
             def on_event(event: AgentEvent) -> None:
                 if event.type == "tool_call":
                     emit({"type": "tool", "name": event.data["name"], "arguments": event.data.get("arguments") or ""})
                 elif event.type == "tool_result" and event.data["result"].startswith("Error"):
                     emit({"type": "tool_error", "text": event.data["result"][:300]})
+                elif event.type == "review":
+                    emit({"type": "review", "feedback": event.data.get("feedback"), "error": event.data.get("error")})
 
             # Pictures come from the folder the server was started in, nowhere else.
-            return create_agent(session.doc, llm=session.llm_factory(), on_event=on_event, image_root=os.getcwd())
+            return create_agent(session.doc, llm=session.llm_factory(), on_event=on_event, image_root=os.getcwd(),
+                                review=review)
 
         # ---------------------------------------------------------- routing
 
@@ -148,9 +151,11 @@ def make_handler(session: Session, model_label: str):
                 message = str(payload.get("message", "")).strip()
                 if not message:
                     return self._json({"error": "empty message"}, 400)
-                self._stream(lambda emit: self._chat(emit, message, bool(payload.get("plan"))))
+                review = bool(payload.get("review", True))
+                self._stream(lambda emit: self._chat(emit, message, bool(payload.get("plan")), review))
             elif self.path == "/approve":
-                self._stream(self._approve)
+                review = bool(json.loads(body or b"{}").get("review", True))
+                self._stream(lambda emit: self._approve(emit, review))
             elif self.path == "/discard":
                 with session.lock:
                     session.pending = None
@@ -189,8 +194,8 @@ def make_handler(session: Session, model_label: str):
 
         # ------------------------------------------------------------- work
 
-        async def _chat(self, emit, message: str, plan: bool) -> None:
-            agent = self._agent(emit)
+        async def _chat(self, emit, message: str, plan: bool, review: bool = True) -> None:
+            agent = self._agent(emit, review)
             if session.pending is not None:
                 # A plan is waiting: treat the message as feedback on it.
                 session.pending = await agent.aplan(
@@ -205,11 +210,11 @@ def make_handler(session: Session, model_label: str):
                 session.history = result.messages
                 self._reply(emit, result)
 
-        async def _approve(self, emit) -> None:
+        async def _approve(self, emit, review: bool = True) -> None:
             if session.pending is None:
                 emit({"type": "error", "text": "There is no plan to approve."})
                 return
-            result = await self._agent(emit).aexecute(session.pending)
+            result = await self._agent(emit, review).aexecute(session.pending)
             session.history = result.messages
             session.pending = None
             self._reply(emit, result)
