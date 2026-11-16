@@ -1,0 +1,14 @@
+instruction: >
+  Make every occurrence of the word WARNING bold and red (FF0000). Format only
+  that word and change nothing else.
+input:
+  - heading: Operating instructions
+  - paragraph: "WARNING: disconnect the power before opening the case."
+  - paragraph: Remove the four screws on the back panel.
+  - paragraph: "Lift the cover slowly. WARNING: the fan blades are sharp."
+checks:
+  - formatting: {text: WARNING, bold: true, color: FF0000, only: true}
+  - unchanged_except: []
+  - block_count: 4
+solution:
+  - format_text: {blocks: [b2, b4], match: WARNING, bold: true, color: FF0000}

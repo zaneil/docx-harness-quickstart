@@ -1,0 +1,29 @@
+instruction: >
+  Move the "Timeline" section (its heading and everything under it) so that it
+  comes before the "Risks" section. Do not change any text.
+input:
+  - title: Website relaunch plan
+  - heading: Introduction
+  - paragraph: This plan covers the relaunch of the public website.
+  - heading: Risks
+  - paragraph: The content migration may take longer than planned.
+  - paragraph: Two key developers are on leave in August.
+  - heading: Timeline
+  - paragraph: Design is complete by the end of June.
+  - table: [[Phase, Month], [Build, July], [Launch, September]]
+checks:
+  - order:
+      - Introduction
+      - This plan covers
+      - Timeline
+      - Design is complete
+      - Launch
+      - Risks
+      - The content migration
+      - Two key developers
+  - unchanged_except: []
+  - heading_count: 3
+  - block_count: 9
+  - table: {rows: 3, cols: 2, has_row: [[Launch, September]]}
+solution:
+  - move_blocks: {block_ids: [b7, b8, b9], after: b3}

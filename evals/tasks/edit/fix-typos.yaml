@@ -1,0 +1,18 @@
+instruction: Fix the spelling and grammar mistakes. Do not change anything else.
+input:
+  - heading: Project status
+  - paragraph: Teh team has completd the first milestone and recieved positive feedback from the client.
+  - paragraph: The second milestone is sheduled for next month, and their are no known risks.
+  - paragraph: Budget remains on track.
+checks:
+  - text_contains:
+      - The team has completed the first milestone and received positive feedback from the client.
+      - The second milestone is scheduled for next month, and there are no known risks.
+  - unchanged: [Project status, Budget remains on track.]
+  - block_count: 4
+solution:
+  - replace_text: {find: Teh, replace: The}
+  - replace_text: {find: completd, replace: completed}
+  - replace_text: {find: recieved, replace: received}
+  - replace_text: {find: sheduled, replace: scheduled}
+  - replace_text: {find: their are, replace: there are}

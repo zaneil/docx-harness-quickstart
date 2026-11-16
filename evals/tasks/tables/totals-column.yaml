@@ -1,0 +1,17 @@
+instruction: Add a "Total" column on the right of the table holding the sum of Q1 and Q2 for each row.
+input:
+  - heading: Units sold
+  - table: [[Item, Q1, Q2], [Widgets, "10", "15"], [Gadgets, "7", "9"], [Cables, "20", "4"]]
+checks:
+  - table_count: 1
+  - table:
+      rows: 4
+      cols: 4
+      has_row:
+        - [Item, Q1, Q2, Total]
+        - [Widgets, "10", "15", "25"]
+        - [Gadgets, "7", "9", "16"]
+        - [Cables, "20", "4", "24"]
+  - unchanged_except: []
+solution:
+  - insert_table_column: {table_id: b2, cells: [Total, "25", "16", "24"]}

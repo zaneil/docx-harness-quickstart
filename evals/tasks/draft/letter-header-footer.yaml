@@ -1,0 +1,23 @@
+instruction: >
+  Write a short letter from Northwind Traders to Ms. Dana Lee confirming that
+  her order 4471 will ship on June 12. Sign it from Alex Kim, Customer
+  Service, and do not leave placeholders such as [Address]. Put "Northwind
+  Traders" in the page header and "Page X of Y" page numbering in the footer.
+checks:
+  - header_contains: Northwind Traders
+  - footer_contains: ["{PAGE}", "{NUMPAGES}"]
+  - text_contains: [Dana Lee, "4471", June 12, Alex Kim]
+  - text_absent: ["[", "{PAGE}", "**"]
+  - word_count: {min: 25, max: 300}
+judge: >
+  A polite, complete business letter with a greeting, the confirmation and a
+  sign-off, and no placeholders.
+solution:
+  - insert_paragraphs:
+      paragraphs:
+        - {text: "Dear Ms. Dana Lee,"}
+        - text: Thank you for your order. We are pleased to confirm that order 4471 will ship on June 12, and you will receive a tracking number by email the same day.
+        - {text: "Yours sincerely,"}
+        - {text: "Alex Kim\nCustomer Service"}
+  - set_header_footer: {kind: header, text: Northwind Traders}
+  - set_header_footer: {kind: footer, text: "Page {PAGE} of {NUMPAGES}", alignment: center}

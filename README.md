@@ -289,6 +289,24 @@ Not covered: edits made through `write_part_xml`; accepting or rejecting tracked
 - `insert_image` embeds a file from the machine the agent runs on into the document. Only PNG, JPEG and GIF data is accepted (checked by content, not by name, up to 20 MB), so other files cannot be smuggled in, but a picture the user did not mean to share could be. Set `image_root` wherever the instructions or the document come from someone else.
 - Link addresses are limited to `https`, `http` and `mailto`.
 
+## Evals
+
+`evals/` holds 21 tasks (drafting, targeted edits, restructuring, tables, redlines) that a real model does with these tools. Each task is graded by automatic checks on the saved document; tasks with a rubric also get a 1 to 5 score from a judge model, reported separately.
+
+| Model | Passed | Draft | Edit | Redline | Restructure | Tables | Steps per task | Tokens per task | Cost per task | Judge (1-5) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `openai/gpt-4.1-mini` | 20/21 (95%) | 4/4 | 5/5 | 4/4 | 3/4 | 4/4 | 3.5 | 17.8k | $0.0026 | 4.83 |
+
+One run on 2026-11-15 through OpenRouter, judged by `openai/gpt-4.1`. Each task runs once, so expect a task or so of difference between runs.
+
+```bash
+uv run python -m evals run                          # default model; needs OPENROUTER_API_KEY
+uv run python -m evals run --model openai/gpt-4.1   # another model; repeat --model for several
+uv run python -m evals check                        # offline: prove every task with its reference solution
+```
+
+A task is one YAML file: an instruction, the starting document, the checks, and the tool calls that solve it. To add one, see [`evals/README.md`](evals/README.md).
+
 ## Development
 
 ```bash

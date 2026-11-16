@@ -1,0 +1,33 @@
+instruction: >
+  Draft a one-page memo to all staff announcing that the office will move to
+  200 Harbor Street on March 3. Give it a title in the Title style, a short
+  introduction, a "Key dates" section and a "What you need to do" section
+  with a bulleted list of at least three actions.
+checks:
+  - heading: {level: 0}
+  - heading: Key dates
+  - heading: What you need to do
+  - order: [Key dates, What you need to do]
+  - text_contains: [200 Harbor Street, March 3]
+  - list_items: {kind: bullet, min: 3}
+  - word_count: {min: 60, max: 450}
+  - text_absent: ["**", "##", "["]
+judge: >
+  Reads like a memo a real office manager could send: clear, complete
+  sentences, a sensible structure, no placeholders and no invented details
+  that contradict the request.
+solution:
+  - insert_paragraphs:
+      paragraphs:
+        - {text: Office move to 200 Harbor Street, style: Title}
+        - text: >-
+            To all staff: our office is moving to 200 Harbor Street on March 3.
+            The new space gives every team more room and is two minutes from
+            the central station. This memo sets out the dates that matter and
+            what each of you needs to do before the move.
+        - {text: Key dates, style: Heading 1}
+        - text: Packing crates arrive on February 24, the current office closes at noon on February 28, and the new office opens on March 3.
+        - {text: What you need to do, style: Heading 1}
+        - {text: Pack your desk into the labelled crates by February 27., style: List Bullet}
+        - {text: Take personal items and laptops home on February 28., style: List Bullet}
+        - {text: Collect your new access card from reception on March 3., style: List Bullet}

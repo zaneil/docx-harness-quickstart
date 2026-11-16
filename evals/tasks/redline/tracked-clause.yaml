@@ -1,0 +1,29 @@
+instruction: >
+  Delete the "Exclusivity" clause. Then add a new paragraph directly after the
+  "Term" clause that reads exactly: "Renewal. This agreement renews
+  automatically for successive one-year terms."
+track_changes: true
+author: Legal
+input:
+  - heading: Distribution agreement
+  - paragraph: Term. This agreement starts on the effective date and runs for two years.
+  - paragraph: Exclusivity. The Distributor shall not sell competing products in the territory.
+  - paragraph: Payment. Invoices are due within thirty days.
+checks:
+  - text_absent: [Exclusivity, competing products]
+  - unchanged:
+      - Distribution agreement
+      - Term. This agreement starts on the effective date and runs for two years.
+      - Renewal. This agreement renews automatically for successive one-year terms.
+      - Payment. Invoices are due within thirty days.
+  - order: [Term. This agreement, Renewal. This agreement, Payment. Invoices]
+  - block_count: 4
+  - revisions: {author: Legal, type: delete, min: 1}
+  - revisions: {author: Legal, type: insert, min: 1}
+  - reject_all_restores_input: true
+solution:
+  - delete_blocks: {block_ids: [b3]}
+  - insert_paragraphs:
+      after: b2
+      paragraphs:
+        - {text: Renewal. This agreement renews automatically for successive one-year terms.}

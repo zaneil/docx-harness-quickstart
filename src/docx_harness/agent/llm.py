@@ -69,6 +69,10 @@ class OpenAICompatibleClient:
         if response.usage:
             self.usage["prompt_tokens"] += response.usage.prompt_tokens or 0
             self.usage["completion_tokens"] += response.usage.completion_tokens or 0
+            # Some providers (OpenRouter) also report what the request cost, in US dollars.
+            cost = getattr(response.usage, "cost", None)
+            if isinstance(cost, (int, float)):
+                self.usage["cost"] = self.usage.get("cost", 0.0) + cost
         self.usage["requests"] += 1
         message = response.choices[0].message
         out: dict[str, Any] = {"role": "assistant", "content": message.content}

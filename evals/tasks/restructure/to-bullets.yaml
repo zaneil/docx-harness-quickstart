@@ -1,0 +1,19 @@
+instruction: Turn the four items under "Bring the following:" into a bulleted list. Keep everything else as it is.
+input:
+  - heading: Packing list
+  - paragraph: "Bring the following:"
+  - paragraph: Passport
+  - paragraph: Phone charger
+  - paragraph: Water bottle
+  - paragraph: Rain jacket
+  - paragraph: See you at the station at 8:00.
+checks:
+  - list_items:
+      kind: bullet
+      items: [Passport, Phone charger, Water bottle, Rain jacket]
+      min: 4
+      max: 4
+  - unchanged_except: []
+  - block_count: 7
+solution:
+  - set_paragraph_style: {blocks: [b3, b4, b5, b6], style: List Bullet}

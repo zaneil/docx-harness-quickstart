@@ -1,0 +1,25 @@
+instruction: >
+  Update the delivery paragraph: standard delivery now takes 5 business days
+  instead of 10, and express shipping is no longer offered. Leave the other
+  paragraphs alone.
+track_changes: true
+input:
+  - heading: Shipping policy
+  - paragraph: Orders are processed on the day they are received.
+  - paragraph: Standard delivery takes 10 business days. Express shipping is available for an extra fee.
+  - paragraph: Returns are accepted within 30 days.
+checks:
+  - text_contains: [5 business days]
+  - text_absent: [10 business days, available for an extra fee]
+  - text_contains_any: [no longer, not offered, not available, discontinued, unavailable]
+  - unchanged: [Shipping policy, Orders are processed on the day they are received., Returns are accepted within 30 days.]
+  - block_count: 4
+  - revisions: {min: 2}
+  - reject_all_restores_input: true
+judge: >
+  The delivery paragraph states clearly and grammatically that standard
+  delivery takes 5 business days and that express shipping is no longer
+  offered, and the tracked changes are limited to that paragraph.
+solution:
+  - replace_text: {find: 10 business days, replace: 5 business days}
+  - replace_text: {find: is available for an extra fee, replace: is no longer offered}

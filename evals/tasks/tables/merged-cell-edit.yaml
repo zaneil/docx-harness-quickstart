@@ -1,0 +1,28 @@
+instruction: >
+  In the budget table the actual figure for Engineering is now 131. Update
+  it, and change the table's title cell to "2025 Budget (final)".
+input:
+  - heading: Finance
+  - table:
+      - [2025 Budget, "", ""]
+      - [Department, Planned, Actual]
+      - [Marketing, "50", "48"]
+      - [Engineering, "120", TBD]
+    merge: [[0, 0, 0, 2]]
+checks:
+  - table:
+      rows: 4
+      cols: 3
+      cells:
+        - {at: [0, 0], text: 2025 Budget (final)}
+        - {at: [3, 2], text: "131"}
+      has_row:
+        - [2025 Budget (final), "", ""]
+        - [Department, Planned, Actual]
+        - [Marketing, "50", "48"]
+        - [Engineering, "120", "131"]
+      absent: [TBD]
+  - unchanged_except: [2025 Budget, TBD]
+solution:
+  - set_table_cell: {table_id: b2, row: 3, col: 2, text: "131"}
+  - set_table_cell: {table_id: b2, row: 0, col: 0, text: 2025 Budget (final)}

@@ -1,0 +1,35 @@
+instruction: >
+  Delete the "Legacy systems" section entirely (its heading and both
+  paragraphs). Then add a new "Summary" section directly after the title: a
+  Heading 1 followed by one paragraph of 20 to 60 words that states the
+  recommendation to choose Orbit Supply. Leave the other sections unchanged.
+plan: true
+input:
+  - title: Vendor evaluation
+  - heading: Background
+  - paragraph: We compared three vendors for the warehouse scanners over six weeks.
+  - heading: Pricing
+  - paragraph: Orbit Supply quoted the lowest price per unit and includes a three-year warranty.
+  - heading: Legacy systems
+  - paragraph: The old mainframe inventory system will be retired next year.
+  - paragraph: None of the vendors support the mainframe export format.
+  - heading: Recommendation
+  - paragraph: We recommend Orbit Supply.
+checks:
+  - text_absent: {text: [Legacy systems, mainframe], case: false}
+  - heading: {text: Summary, level: 1}
+  - order: [Vendor evaluation, Summary, Orbit Supply, Background, Pricing, Recommendation, We recommend Orbit Supply.]
+  - unchanged_except: [mainframe, Legacy systems]
+  - heading_count: 4
+  - block_count: 9
+  - section_words: {heading: Summary, min: 20, max: 60}
+judge: >
+  The Summary paragraph accurately reflects the rest of the document
+  (recommending Orbit Supply, for reasons the document gives) and invents no facts.
+solution:
+  - delete_blocks: {block_ids: [b6, b7, b8]}
+  - insert_paragraphs:
+      after: b1
+      paragraphs:
+        - {text: Summary, style: Heading 1}
+        - text: After comparing three vendors over six weeks, we recommend Orbit Supply for the warehouse scanners because it quoted the lowest price per unit and includes a three-year warranty.

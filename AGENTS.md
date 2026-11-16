@@ -26,6 +26,8 @@ uv run docx-harness "Draft a memo about X" -o memo.docx          # needs OPENROU
 uv run docx-harness "Fix the typos" -i in.docx -o out.docx --plan
 uv run docx-harness-ui                    # local chat UI at http://127.0.0.1:8765
 uv run python scripts/build_template.py   # regenerate the bundled blank.docx after editing the script
+uv run python -m evals check              # offline: every eval task fails untouched and passes with its solution
+uv run python -m evals run -k fix-typos   # live eval on a real model; needs OPENROUTER_API_KEY and costs tokens
 ```
 
 Run `uv run pytest` before finishing any change. Tests use a scripted fake model (`ScriptedLLM` in `tests/conftest.py`), so they never call a real API.
@@ -45,6 +47,8 @@ Run `uv run pytest` before finishing any change. Tests use a scripted fake model
 | Change hyperlinks, pictures, headers and footers | `document/document.py` (`add_hyperlink`, `insert_image`, `_set_header_footer`), `document/images.py`; new parts and relationships go through `WordPackage.add_part` / `relate` | `tests/test_content.py`, `tests/test_package.py` |
 | Change how tracked changes (redlines) are recorded, accepted or rejected | `document/edits.py` (`EditContext`); selection in `WordDocument._resolve`; reading helpers in `document/ooxml.py` | `tests/test_tracked.py` |
 | Change the chat UI | `ui/server.py`, `ui/chat.html` | `tests/test_ui.py` |
+| Add an eval task | One YAML file in `evals/tasks/<category>/` (format in `evals/README.md`); find block ids for its `solution` with `uv run python -m evals show <id>` | `uv run python -m evals check <id>`, `tests/test_evals.py` |
+| Add an eval check or input step | `evals/checks.py` (`@check`), `evals/builder.py` (`@step`); add a case to `CASES` in the test and a row in `evals/README.md` | `tests/test_evals.py` |
 
 ## Minimal usage, for writing code against it
 
@@ -95,6 +99,7 @@ doc.save("out.docx")
 - Unit level: add or extend a test next to the ones for that layer. For document changes, also reopen the saved file with `python-docx` (see `reopen_with_python_docx` in `tests/conftest.py`) as an independent check that the output is valid.
 - Harness level: script the model with `ScriptedLLM([assistant(call("tool_name", arg=...)), assistant(content="done")])`.
 - Live: `uv run docx-harness "..." -o out.docx -v` prints every tool call and result.
+- Model behaviour: after changing a prompt in `agent/prompts.py` or a tool's description or arguments, run `uv run python -m evals run` and compare with the table in the README. `evals/` sits above `api.py`, imports only the public `docx_harness` API, and is not shipped in the wheel. A live run is never part of `uv run pytest`.
 
 ## Known limits (do not assume these work)
 

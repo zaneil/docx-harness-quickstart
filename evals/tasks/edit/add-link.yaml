@@ -1,0 +1,13 @@
+instruction: >
+  In the first paragraph, turn the words "employee handbook" into a link to
+  https://example.com/handbook. Link only those two words and do not change the text.
+input:
+  - heading: Time off
+  - paragraph: Requests follow the rules in the employee handbook and need a manager's approval.
+  - paragraph: Submit requests at least two weeks ahead.
+checks:
+  - link: {text: employee handbook, url: "https://example.com/handbook"}
+  - unchanged_except: []
+  - block_count: 3
+solution:
+  - add_hyperlink: {blocks: [b2], url: "https://example.com/handbook", match: employee handbook}
