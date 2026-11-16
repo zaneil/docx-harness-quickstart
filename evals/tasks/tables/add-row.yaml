@@ -1,0 +1,22 @@
+instruction: Add Chloe, an Analyst who started in 2024, as a new last row of the team table.
+input:
+  - heading: Team
+  - table: [[Name, Role, Start year], [Ana, Designer, "2021"], [Ben, Engineer, "2022"]]
+  - paragraph: Contact the team lead with questions.
+checks:
+  - table_count: 1
+  - table:
+      rows: 4
+      cols: 3
+      cells:
+        - {at: [3, 0], text: Chloe}
+        - {at: [3, 1], text: Analyst}
+        - {at: [3, 2], text: "2024"}
+      has_row:
+        - [Name, Role, Start year]
+        - [Ana, Designer, "2021"]
+        - [Ben, Engineer, "2022"]
+  - unchanged_except: []
+  - block_count: 3
+solution:
+  - insert_table_row: {table_id: b2, cells: [Chloe, Analyst, "2024"]}

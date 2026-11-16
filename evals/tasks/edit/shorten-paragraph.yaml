@@ -1,0 +1,31 @@
+instruction: >
+  The paragraph under "Background" is too long. Rewrite it in at most 40
+  words, keeping the facts that the program started in 2019 and now covers
+  14 cities. Leave the rest of the document unchanged.
+input:
+  - title: Bike share program review
+  - heading: Background
+  - paragraph: >-
+      The bike share program was first started back in 2019 as a small pilot
+      project that was run by the city transport office in cooperation with a
+      number of local partners, and over the course of the following years it
+      has grown considerably and steadily, so that at the present time it now
+      covers a total of 14 cities across the region, which is something that
+      nobody involved at the very beginning would have expected to happen.
+  - heading: Usage
+  - paragraph: Riders made 1.2 million trips last year, a rise of 18 percent.
+  - heading: Funding
+  - paragraph: The program is funded by fares and a regional grant.
+checks:
+  - text_contains: ["2019", 14 cities]
+  - text_absent: [nobody involved at the very beginning]
+  - unchanged_except: [first started back in 2019]
+  - block_count: 7
+  - section_words: {heading: Background, min: 10, max: 40}
+judge: >
+  The rewritten Background paragraph is a faithful, fluent summary of the
+  original: it keeps 2019 and 14 cities and adds no new facts.
+solution:
+  - update_paragraph:
+      block_id: b3
+      text: The bike share program started in 2019 as a small pilot run by the city transport office with local partners. It has grown steadily and now covers 14 cities across the region.

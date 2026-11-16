@@ -1,0 +1,37 @@
+instruction: >
+  Write a short quarterly sales report with three sections, each a Heading 1:
+  Summary, Results and Next steps. Under Results add a table with the columns
+  Region, Q1 and Q2 and one row each for North (120, 135), South (98, 110)
+  and West (143, 150). Write a sentence or two under each heading.
+checks:
+  - heading: {text: Summary, level: 1}
+  - heading: {text: Results, level: 1}
+  - heading: {text: Next steps, level: 1}
+  - order: [Summary, Results, Region, Next steps]
+  - table_count: 1
+  - table:
+      rows: 4
+      cols: 3
+      has_row:
+        - [Region, Q1, Q2]
+        - [North, "120", "135"]
+        - [South, "98", "110"]
+        - [West, "143", "150"]
+  - word_count: {min: 50, max: 400}
+  - text_absent: ["**", "##", "|"]
+judge: >
+  The prose is consistent with the figures in the table (for example it does
+  not claim a region fell when its number rose) and reads like a business report.
+solution:
+  - insert_paragraphs:
+      paragraphs:
+        - {text: Summary, style: Heading 1}
+        - text: Sales grew in every region between the first and second quarter, with the North region growing fastest.
+        - {text: Results, style: Heading 1}
+        - text: The table below shows sales by region for the two quarters.
+  - insert_table:
+      rows: [[Region, Q1, Q2], [North, "120", "135"], [South, "98", "110"], [West, "143", "150"]]
+  - insert_paragraphs:
+      paragraphs:
+        - {text: Next steps, style: Heading 1}
+        - text: We will study what drove the growth in the North region and apply it to the South region next quarter.

@@ -13,3 +13,5 @@ build/
 .idea/
 # local tracking notes
 /TODO.md
+# eval run output
+/evals/results/

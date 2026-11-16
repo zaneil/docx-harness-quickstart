@@ -1,0 +1,19 @@
+instruction: >
+  The company has been renamed from Acme Corp to Zenith Labs. Update every
+  mention in the document, including the page header. Change nothing else.
+input:
+  - header: Acme Corp internal
+  - title: Acme Corp onboarding guide
+  - paragraph: Welcome to Acme Corp. This guide covers your first week.
+  - heading: Contacts
+  - table: [[Team, Contact], [IT helpdesk, it@example.com], [Acme Corp payroll, payroll@example.com]]
+  - paragraph: Everyone at Acme Corp is glad you are here.
+checks:
+  - text_absent: {text: Acme, case: false}
+  - regex: {pattern: Zenith Labs, min: 4, max: 4}
+  - header_contains: Zenith Labs internal
+  - table: {with_text: payroll, has_row: [[Zenith Labs payroll, payroll@example.com]]}
+  - unchanged: [Zenith Labs onboarding guide, Contacts, it@example.com]
+  - unchanged_except: [Acme]
+solution:
+  - replace_text: {find: Acme Corp, replace: Zenith Labs}

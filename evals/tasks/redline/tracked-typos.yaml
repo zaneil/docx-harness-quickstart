@@ -1,0 +1,19 @@
+instruction: Fix the spelling mistakes in this agreement.
+track_changes: true
+author: Reviewer
+input:
+  - heading: Service agreement
+  - paragraph: The Supplier shall delivr the goods within thirty days of reciept of the order.
+  - paragraph: Either party may terminate this agreement with sixty days' written notice.
+  - paragraph: Payment is due within fourteen days of the invoise date.
+checks:
+  - text_contains:
+      - The Supplier shall deliver the goods within thirty days of receipt of the order.
+      - Payment is due within fourteen days of the invoice date.
+  - unchanged: [Service agreement, Either party may terminate this agreement with sixty days' written notice.]
+  - revisions: {author: Reviewer, min: 3}
+  - reject_all_restores_input: true
+solution:
+  - replace_text: {find: delivr, replace: deliver}
+  - replace_text: {find: reciept, replace: receipt}
+  - replace_text: {find: invoise, replace: invoice}

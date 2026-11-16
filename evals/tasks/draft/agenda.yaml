@@ -1,0 +1,26 @@
+instruction: >
+  Draft an agenda for the weekly engineering sync, held on Monday at 10:00 in
+  Room 4B. Use "Engineering sync agenda" as the title (Title style) and state
+  the time and room in a line below it. Then add a numbered list with exactly
+  these five items in this order: Review action items, Release status,
+  Incident review, Hiring update, Any other business.
+checks:
+  - heading: {text: Engineering sync agenda, level: 0}
+  - text_contains: ["10:00", Room 4B]
+  - list_items:
+      kind: number
+      items: [Review action items, Release status, Incident review, Hiring update, Any other business]
+      min: 5
+      max: 5
+  - order: [Engineering sync agenda, Review action items, Release status, Incident review, Hiring update, Any other business]
+  - regex: {pattern: '^\d+[.)]\s', max: 0}
+solution:
+  - insert_paragraphs:
+      paragraphs:
+        - {text: Engineering sync agenda, style: Title}
+        - {text: "Monday, 10:00, Room 4B"}
+        - {text: Review action items, style: List Number}
+        - {text: Release status, style: List Number}
+        - {text: Incident review, style: List Number}
+        - {text: Hiring update, style: List Number}
+        - {text: Any other business, style: List Number}

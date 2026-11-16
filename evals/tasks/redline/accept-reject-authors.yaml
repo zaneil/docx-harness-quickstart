@@ -1,0 +1,31 @@
+instruction: Accept all of Alice's tracked changes and reject all of Bob's.
+input:
+  - heading: Consulting terms
+  - paragraph: Invoices are payable within 30 days.
+  - paragraph: The Consultant will provide weekly status reports.
+  - paragraph: Travel costs are reimbursed at cost.
+  - tracked:
+      author: Alice
+      steps:
+        - replace: [30 days, 45 days]
+        - insert: Late payments bear interest at 5 percent per year.
+          after: Invoices are payable
+  - tracked:
+      author: Bob
+      steps:
+        - replace: [weekly, monthly]
+        - delete: Travel costs are reimbursed
+checks:
+  - revisions: 0
+  - unchanged:
+      - Consulting terms
+      - Invoices are payable within 45 days.
+      - Late payments bear interest at 5 percent per year.
+      - The Consultant will provide weekly status reports.
+      - Travel costs are reimbursed at cost.
+  - text_absent: [30 days, monthly]
+  - order: [Invoices are payable, Late payments, The Consultant, Travel costs]
+  - block_count: 5
+solution:
+  - accept_revisions: {author: Alice}
+  - reject_revisions: {author: Bob}

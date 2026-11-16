@@ -1,0 +1,31 @@
+instruction: >
+  Replace the three location lines with a table that has the columns City and
+  Staff, one row per location, with only the number in the Staff column.
+  Shade the header row light grey (D9D9D9). Keep the other text.
+input:
+  - heading: Office locations
+  - paragraph: "Lisbon: 42 staff"
+  - paragraph: "Denver: 18 staff"
+  - paragraph: "Osaka: 27 staff"
+  - paragraph: Figures are updated every quarter.
+checks:
+  - table_count: 1
+  - table:
+      rows: 4
+      cols: 2
+      has_row:
+        - [City, Staff]
+        - [Lisbon, "42"]
+        - [Denver, "18"]
+        - [Osaka, "27"]
+      shaded_row: 0
+  - text_absent: [42 staff, 18 staff, 27 staff]
+  - unchanged: [Office locations, Figures are updated every quarter.]
+  - order: [Office locations, Lisbon, Osaka, Figures are updated]
+  - block_count: 3
+solution:
+  - insert_table:
+      after: b1
+      rows: [[City, Staff], [Lisbon, "42"], [Denver, "18"], [Osaka, "27"]]
+  - delete_blocks: {block_ids: [b2, b3, b4]}
+  - format_table_cells: {cells: ["b6[0,*]"], shading: D9D9D9}

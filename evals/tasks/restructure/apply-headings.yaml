@@ -1,0 +1,27 @@
+instruction: >
+  This document has no heading styles. Make "Annual review" the Title, the
+  three numbered section names Heading 1 and the sub-section "2.1 Staffing"
+  Heading 2. Keep all the text exactly as it is.
+input:
+  - paragraph: Annual review
+  - paragraph: 1. Achievements
+  - paragraph: We shipped three major releases and doubled the number of active users.
+  - paragraph: 2. Challenges
+  - paragraph: Support volume grew faster than the team.
+  - paragraph: 2.1 Staffing
+  - paragraph: Four roles stayed open for more than six months.
+  - paragraph: 3. Goals
+  - paragraph: Cut the median response time to under four hours.
+checks:
+  - style_of: {text: Annual review, style: Title}
+  - style_of: {text: 1. Achievements, style: Heading 1}
+  - style_of: {text: 2. Challenges, style: Heading 1}
+  - style_of: {text: 3. Goals, style: Heading 1}
+  - style_of: {text: 2.1 Staffing, style: Heading 2}
+  - heading_count: 4
+  - unchanged_except: []
+  - block_count: 9
+solution:
+  - set_paragraph_style: {blocks: [b1], style: Title}
+  - set_paragraph_style: {blocks: [b2, b4, b8], style: Heading 1}
+  - set_paragraph_style: {blocks: [b6], style: Heading 2}
