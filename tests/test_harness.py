@@ -30,8 +30,9 @@ async def test_loop_runs_tools_until_text_reply(doc):
     assert [m["role"] for m in result.messages] == ["system", "user", "assistant", "tool", "assistant", "tool", "assistant"]
     assert result.messages[3]["tool_call_id"] == llm.requests[1]["messages"][2]["tool_calls"][0]["id"]
     assert [e.type for e in events].count("tool_call") == 2
-    # every tool is offered outside plan mode
-    assert len(llm.requests[0]["tools"]) == len(agent.tools)
+    # every available tool is offered outside plan mode (a blank document has
+    # no tables and tracks no changes, so those groups are left out)
+    assert len(llm.requests[0]["tools"]) == len(agent.tools.to_openai_schema()) < len(agent.tools)
 
 
 async def test_tool_errors_go_back_to_the_model(doc):
@@ -250,3 +251,13 @@ async def test_planning_step_budget_forces_a_plan(doc):
     assert llm.requests[0]["tools"] and llm.requests[1]["tools"]
     assert llm.requests[2]["tools"] is None          # last planning step: no tools offered
     assert llm.requests[3]["tools"]                  # execution has tools again
+
+
+async def test_tools_offered_follow_the_state_step_by_step(doc):
+    llm = ScriptedLLM([
+        assistant(call("insert_table", rows=[["a", "b"]])),
+        assistant(content="done"),
+    ])
+    await create_agent(doc, llm=llm).arun("add a table")
+    names = [{t["function"]["name"] for t in request["tools"]} for request in llm.requests]
+    assert "set_table_cell" not in names[0] and "set_table_cell" in names[1]

@@ -164,13 +164,15 @@ class Agent:
     async def _loop(self, messages: list[dict], *, read_only: bool) -> tuple[str, int, str]:
         """Call the model, run its tool calls, repeat until it answers in text.
         Appends to ``messages`` in place. Returns (final text, steps, status)."""
-        schema = self.tools.to_openai_schema(read_only=read_only) or None
         last_text = ""
         limit = min(self.max_steps, self.max_plan_steps) if read_only else self.max_steps
         self._seen_reads: dict[tuple[str, str], str] = {}
         for step in range(1, limit + 1):
             # Planning must end in a plan: on the final step offer no tools.
-            offered = None if read_only and step == limit and limit > 1 else schema
+            # Otherwise offer what is available now: a tool's ``available`` check
+            # can depend on state that the previous step changed.
+            final_plan_step = read_only and step == limit and limit > 1
+            offered = None if final_plan_step else self.tools.to_openai_schema(read_only=read_only) or None
             reply = await self.llm.acomplete(messages, offered)
             messages.append(reply)
             last_text = reply.get("content") or last_text

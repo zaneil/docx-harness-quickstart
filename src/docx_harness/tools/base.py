@@ -33,6 +33,13 @@ class Tool:
     read_only: bool = False
     #: True for sync handlers that block on I/O; they run in a worker thread.
     blocking: bool = False
+    #: Optional check, run before each model call: when it returns False the
+    #: tool is left out of the schemas offered (it still runs if called).
+    #: Use it to keep tools the current state has no use for out of the prompt.
+    available: Callable[[], bool] | None = None
+
+    def is_available(self) -> bool:
+        return self.available is None or bool(self.available())
 
     def to_openai(self) -> dict:
         """The tool in OpenAI chat-completions ``tools`` format."""
@@ -140,11 +147,13 @@ def tool(
     parameters: dict | None = None,
     read_only: bool = False,
     blocking: bool = False,
+    available: Callable[[], bool] | None = None,
 ):
     """Turn a function (sync or async) into a :class:`Tool`.
 
     Usable bare (``@tool``) or with options (``@tool(read_only=True)``). Pass
-    ``parameters`` to supply a hand-written JSON schema instead of the derived one.
+    ``parameters`` to supply a hand-written JSON schema instead of the derived one,
+    and ``available`` to offer the tool only while that check returns True.
     """
 
     def wrap(func: Callable) -> Tool:
@@ -156,6 +165,7 @@ def tool(
             handler=func,
             read_only=read_only,
             blocking=blocking,
+            available=available,
         )
 
     return wrap(fn) if fn is not None else wrap

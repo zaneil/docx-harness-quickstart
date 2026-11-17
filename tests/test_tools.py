@@ -73,7 +73,8 @@ async def test_builtin_tools_end_to_end(doc):
             {"text": "Revenue grew 10 percent."},
         ]
     }))
-    assert result == "Inserted 3 paragraph(s): b1, b2, b3"
+    assert result.splitlines()[0] == "Inserted 3 paragraph(s): b1, b2, b3. Around the change:"
+    assert result.splitlines()[1:] == ["* b1 [Title] Report", "* b2 [heading 1] Summary", "* b3 [Normal] Revenue grew 10 percent."]
 
     await registry.aexecute("insert_table", {"rows": [["Q", "Rev"], ["Q1", "10"]], "after": "b2"})
     outline = await registry.aexecute("get_outline")
@@ -263,8 +264,8 @@ def test_image_tool_and_image_root(doc, tmp_path):
 
     registry = ToolRegistry(default_tools(doc, image_root=inside))
     result = registry.execute("insert_image", {"path": "logo.png", "alt_text": "Logo", "alignment": "center"})
-    assert result == "Inserted image b1 (1.0 x 0.5 in)."
-    assert registry.execute("insert_image", {"path": str(inside / "logo.png"), "width_in": 2}).endswith("(2.0 x 1.0 in).")
+    assert result.startswith("Inserted image b1 (1.0 x 0.5 in).")
+    assert registry.execute("insert_image", {"path": str(inside / "logo.png"), "width_in": 2}).splitlines()[0].endswith("(2.0 x 1.0 in). Around the change:")
     for escape in ("../outside.png", str(tmp_path / "outside.png")):
         assert registry.execute("insert_image", {"path": escape}).startswith("Error: Images can only be read from")
     assert registry.execute("insert_image", {"path": "missing.png"}).startswith("Error: Cannot read the image file")
@@ -295,3 +296,51 @@ def test_header_footer_and_table_format_tools(doc):
     layout = json.loads(registry.execute("read_blocks", {"include_formatting": True}))["blocks"][0]["format"]
     assert layout["borders"] == "horizontal" and layout["cells"][0]["borders"]["bottom"]["style"] == "thick"
     assert registry.execute("format_table_cells", {"cells": ["b1"], "border": "wavy"}).startswith("Error: Invalid border")
+
+
+def test_tool_groups_and_availability(doc):
+    from docx_harness.tools.builtin import TOOL_GROUPS
+
+    registry = ToolRegistry(default_tools(doc))
+    offered = lambda: {t["function"]["name"] for t in registry.to_openai_schema()}  # noqa: E731
+    # A blank document: no tables to edit and no tracked changes to review.
+    assert "set_table_cell" not in offered() and "accept_revisions" not in offered()
+    assert "insert_table" in offered() and "get_outline" in offered()
+    registry.execute("insert_table", {"rows": [["a", "b"]]})
+    assert {"set_table_cell", "format_table_cells"} <= offered()
+    doc.track_changes = True
+    assert {"list_revisions", "accept_revisions"} <= offered()
+    registry.execute("insert_paragraphs", {"paragraphs": [{"text": "tracked"}]})
+    doc.track_changes = False
+    assert doc.has_revisions() and "accept_revisions" in offered()  # still pending, so still offered
+    registry.execute("accept_revisions", {"all_revisions": True})
+    assert not doc.has_revisions() and "accept_revisions" not in offered()
+    # Hidden tools still run when called.
+    hidden = ToolRegistry(default_tools(type(doc).open()))
+    assert hidden.execute("list_revisions", {}) == "There are no tracked changes in the document."
+
+    only = default_tools(doc, groups=["read", "tables"])
+    assert {t.name for t in only} >= {"get_outline", "set_table_cell"} and "insert_paragraphs" not in {t.name for t in only}
+    assert len(default_tools(doc, groups=TOOL_GROUPS)) == len(default_tools(doc))
+    try:
+        default_tools(doc, groups=["read", "comments"])
+    except ValueError as exc:
+        assert "comments" in str(exc) and "tables" in str(exc)
+    else:
+        raise AssertionError("an unknown group should be refused")
+
+
+def test_structural_results_show_the_neighbourhood(doc):
+    registry = ToolRegistry(default_tools(doc))
+    registry.execute("insert_paragraphs", {"paragraphs": [{"text": f"p{i}"} for i in range(1, 4)]})
+    result = registry.execute("insert_paragraphs", {"paragraphs": [{"text": f"new{i}"} for i in range(1, 8)], "after": "b1"})
+    # Seven inserted: the context line before, four of them, and the context line after.
+    assert result.splitlines() == [
+        "Inserted 7 paragraph(s): b4, b5, b6, b7, b8, b9, b10. Around the change:",
+        "  b1 [Normal] p1", "* b4 [Normal] new1", "* b5 [Normal] new2", "* b6 [Normal] new3",
+        "  … 3 more", "* b10 [Normal] new7", "  b2 [Normal] p2",
+    ]
+    result = registry.execute("delete_blocks", {"block_ids": ["b4", "b5", "b6", "b7", "b8", "b9", "b10"]})
+    assert result.splitlines() == [
+        "Deleted 7 block(s). Now around the gap:", "  b1 [Normal] p1", "  b2 [Normal] p2", "  b3 [Normal] p3"]
+    assert registry.execute("delete_blocks", {"block_ids": ["b1", "b2", "b3"]}) == "Deleted 3 block(s)."

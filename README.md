@@ -18,7 +18,7 @@ Use `docx-harness-quickstart` to **build a Python AI agent that creates or edits
 | Direct Python document editing without an LLM or API key | [Create and edit a DOCX without an LLM](docs/use-cases.md#create-and-edit-a-docx-without-an-llm) |
 | A review step before an agent changes a document | [Plan and approve document edits](docs/use-cases.md#plan-and-approve-document-edits) |
 
-The built-in semantic tools handle body paragraphs, tables, and formatting. Generating tracked changes, PDF rendering, page-layout inspection, and editing legacy `.doc` files are outside the current scope. See [scope and limitations](#scope-and-limitations) before choosing it for a task.
+The built-in semantic tools handle body paragraphs, tables, formatting, lists, links, pictures, headers and footers, and can record edits as tracked changes. PDF rendering, page-layout inspection, comments, and legacy `.doc` files are outside the current scope. See [scope and limitations](#scope-and-limitations) before choosing it for a task.
 
 ## For coding agents
 
@@ -175,6 +175,10 @@ Tables are read and addressed on their column grid, so files with merged cells b
 
 `insert_paragraphs` takes a `level` per list item and turns `[text](https://address)` into a link. `insert_image` reads any image file the process can; pass `default_tools(doc, image_root=folder)` (or `create_agent(..., image_root=folder)`) to confine it to one folder, as the chat UI does with the folder it was started in.
 
+The tools come in groups (`read`, `write`, `tables`, `format`, `revisions`, `raw`), one module each under `tools/builtin/`; `default_tools(doc, groups=["read", "write"])` (or `create_agent(..., tool_groups=...)`) takes a subset. To keep prompts small, the `tables` tools are offered to the model only while the document has a table, and the `revisions` tools only while it tracks changes or has some pending; any tool can do the same with `@tool(available=check)`.
+
+Edits that insert, move or delete blocks answer with the outline around the change, so the model can see where things landed without reading the document again.
+
 Tool schemas are in OpenAI function-calling format. Tool errors are returned to the model as text rather than raised, so it can correct itself.
 
 ### Layer 3: the harness
@@ -244,7 +248,7 @@ doc.replace_text("60 days", "30 days")            # old text struck out, new tex
 doc.set_paragraph_text("b4", "Payment is due within 30 days of a valid invoice.")   # only the changed words are revised
 doc.delete_block("b9")                            # stays in the file as a deletion, leaves the outline
 doc.format_text("b2", match="Supplier", bold=True)   # formatting change, previous formatting kept
-doc.move_block("b6", after="b2")                  # a tracked move: the paragraph keeps its id
+doc.move_block("b6", after="b2")                  # a tracked move: the paragraph keeps its id; or before="b3"
 print(doc.revisions())                            # what is pending, including other authors' changes
 doc.save("contract-redline.docx")
 
@@ -295,9 +299,9 @@ Not covered: edits made through `write_part_xml`; accepting or rejecting tracked
 
 | Model | Passed | Draft | Edit | Redline | Restructure | Tables | Steps per task | Tokens per task | Cost per task | Judge (1-5) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `openai/gpt-4.1-mini` | 20/21 (95%) | 4/4 | 5/5 | 4/4 | 3/4 | 4/4 | 3.5 | 17.8k | $0.0026 | 4.83 |
+| `openai/gpt-4.1-mini` | 19/21 (90%) | 4/4 | 4/5 | 4/4 | 4/4 | 3/4 | 3.6 | 13.7k | $0.0023 | 5.0 |
 
-One run on 2026-11-15 through OpenRouter, judged by `openai/gpt-4.1`. Each task runs once, so expect a task or so of difference between runs.
+One run on 2026-11-17 through OpenRouter, judged by `openai/gpt-4.1`. Each task runs once, so expect a task or so of difference between runs: the two failures here (`add-link`, `totals-column`) passed on rerun, and `add-link` fails about one run in three, before and after this change.
 
 ```bash
 uv run python -m evals run                          # default model; needs OPENROUTER_API_KEY
