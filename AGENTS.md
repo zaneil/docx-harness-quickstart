@@ -11,7 +11,7 @@ Three layers with a strict one-way dependency: `agent` → `tools` → `document
 | Layer | Path | Responsibility | Must not import |
 | --- | --- | --- | --- |
 | Document | `src/docx_harness/document/` | The unzipped `.docx` and block-level operations | `tools`, `agent`, any LLM code |
-| Tools | `src/docx_harness/tools/` | LLM-callable functions with JSON schemas | `agent` |
+| Tools | `src/docx_harness/tools/` | LLM-callable functions with JSON schemas, in groups (`default_tools(doc, groups=...)`) | `agent` |
 | Agent | `src/docx_harness/agent/` | Generic async tool-calling loop, plan mode, LLM client | `document` (it knows nothing about Word) |
 
 `src/docx_harness/api.py` wires the three together (`create_agent`, `draft`, `adraft`, `adraft_many`). `cli.py` and `ui/` are thin front ends over `api.py`.
@@ -36,16 +36,16 @@ Run `uv run pytest` before finishing any change. Tests use a scripted fake model
 
 | Task | Edit | Then test in |
 | --- | --- | --- |
-| Add a tool the model can call | `tools/builtin.py` (inside `default_tools`), or pass `extra_tools=[...]` to `create_agent` without touching the repo | `tests/test_tools.py` |
-| Add a document capability (e.g. headers, images, comments) | `document/document.py`, helpers in `document/ooxml.py` or `document/styling.py`; then expose it as a tool | `tests/test_document.py` |
-| Change how tables are read, addressed or laid out (merged cells, columns, widths, cell formatting) | `document/tables.py` (the grid and layout helpers), table methods in `document/document.py` | `tests/test_tables.py` |
+| Add a tool the model can call | The group module in `tools/builtin/` (`read.py`, `write.py`, `tables.py`, `formatting.py`, `revisions.py`, `raw.py`; shared helpers in `common.py`), or pass `extra_tools=[...]` to `create_agent` without touching the repo. `@tool(available=check)` offers it only while `check()` is true | `tests/test_tools.py` |
+| Add a document capability (e.g. headers, images, comments) | `document/document.py` holds the core (block ids, reading, inserting, moving, text edits, styles); each other area is a mixin `WordDocument` inherits: `stories.py` (headers, footers, notes), `lists.py`, `table_ops.py`, `media.py` (pictures, links), `revisions.py`. Shared names are in `document/common.py`, XML helpers in `ooxml.py` or `styling.py`. Then expose it as a tool | `tests/test_document.py` |
+| Change how tables are read, addressed or laid out (merged cells, columns, widths, cell formatting) | `document/tables.py` (the grid and layout helpers), table methods in `document/table_ops.py` | `tests/test_tables.py` |
 | Change how the loop runs, plan mode, concurrency | `agent/harness.py` | `tests/test_harness.py` |
 | Use another model or provider | Implement `LLMClient.acomplete` (see `agent/llm.py`), or use `OpenAICompatibleClient(model, api_key=..., base_url=...)` | `tests/test_harness.py` |
 | Change what the model is told | `agent/prompts.py` | live run |
 | Add styles to new documents, or well-known styles added to files that lack them | `document/builtin_styles.py` (`TEMPLATE` goes into `blank.docx`, `EXTRA` is created on demand), then rerun `scripts/build_template.py` | `tests/test_content.py` |
-| Change lists (levels, restarts, the list definitions) | `document/numbering.py`; `_place_in_list`, `set_list_level`, `restart_numbering` in `document/document.py` | `tests/test_content.py` |
-| Change hyperlinks, pictures, headers and footers | `document/document.py` (`add_hyperlink`, `insert_image`, `_set_header_footer`), `document/images.py`; new parts and relationships go through `WordPackage.add_part` / `relate` | `tests/test_content.py`, `tests/test_package.py` |
-| Change how tracked changes (redlines) are recorded, accepted or rejected | `document/edits.py` (`EditContext`); selection in `WordDocument._resolve`; reading helpers in `document/ooxml.py` | `tests/test_tracked.py` |
+| Change lists (levels, restarts, the list definitions) | `document/numbering.py`; `_place_in_list`, `set_list_level`, `restart_numbering` in `document/lists.py` | `tests/test_content.py` |
+| Change hyperlinks, pictures, headers and footers | `document/media.py` (`add_hyperlink`, `insert_image`), `document/stories.py` (`_set_header_footer`), `document/images.py`; new parts and relationships go through `WordPackage.add_part` / `relate` | `tests/test_content.py`, `tests/test_package.py` |
+| Change how tracked changes (redlines) are recorded, accepted or rejected | `document/edits.py` (`EditContext`); listing and selection in `document/revisions.py` (`_resolve`); reading helpers in `document/ooxml.py` | `tests/test_tracked.py` |
 | Change the chat UI | `ui/server.py`, `ui/chat.html` | `tests/test_ui.py` |
 | Add an eval task | One YAML file in `evals/tasks/<category>/` (format in `evals/README.md`); find block ids for its `solution` with `uv run python -m evals show <id>` | `uv run python -m evals check <id>`, `tests/test_evals.py` |
 | Add an eval check or input step | `evals/checks.py` (`@check`), `evals/builder.py` (`@step`); add a case to `CASES` in the test and a row in `evals/README.md` | `tests/test_evals.py` |

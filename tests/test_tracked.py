@@ -608,6 +608,35 @@ def test_untracked_move_keeps_ids_and_leaves_no_markup():
         doc.move_block("b9", "start")
 
 
+def test_move_before_a_block(tmp_path):
+    doc = WordDocument(WordPackage.from_bytes(make_docx(THREE)))
+    doc.move_block("b3", before="b2")
+    assert order(doc) == [("b1", "one"), ("b3", "three"), ("b2", "two")]
+    doc.move_block("b2", before="b1")  # before the first block
+    assert order(doc) == [("b2", "two"), ("b1", "one"), ("b3", "three")]
+    for bad in ({}, {"after": "end", "before": "b1"}):
+        with pytest.raises(ValueError, match="exactly one"):
+            doc.move_block("b1", **bad)
+
+    redline = tracked(THREE)
+    redline.move_block("b3", before="b2")
+    assert order(redline) == [("b1", "one"), ("b3", "three"), ("b2", "two")]
+    assert [(r["move"], r["block"]) for r in redline.revisions()][:1] == [("to", "b3")]
+    reopen_with_python_docx(redline, tmp_path)
+
+
+def test_move_tool_before_and_its_result(tmp_path):
+    doc = WordDocument(WordPackage.from_bytes(make_docx(THREE)))
+    registry = ToolRegistry(default_tools(doc))
+    result = registry.execute("move_blocks", {"block_ids": ["b3"], "before": "b2"})
+    assert result.splitlines() == [
+        "Moved 1 block(s) before b2. Around the change:", "  b1 [Normal] one", "* b3 [Normal] three", "  b2 [Normal] two"]
+    assert registry.execute("move_blocks", {"block_ids": ["b1"]}).startswith("Error: Give exactly one of after and before")
+    assert registry.execute("move_blocks", {"block_ids": ["b1"], "after": "end", "before": "b2"}).startswith("Error: Give exactly one")
+    assert registry.execute("move_blocks", {"block_ids": ["b1", "b2"], "before": "b2"}).startswith("Error: before='b2' is one of")
+    assert order(doc) == [("b1", "one"), ("b3", "three"), ("b2", "two")]  # the errors moved nothing
+
+
 def test_tracked_move_keeps_both_halves_under_one_name(tmp_path):
     doc = tracked(THREE)
     doc.move_block("b3", "start")
@@ -673,7 +702,7 @@ def test_moving_your_own_insertion_and_the_move_tool():
     assert order(doc)[0] == (new, "fresh") and "move" not in xml(doc)
 
     registry = ToolRegistry(default_tools(doc))
-    assert registry.execute("move_blocks", {"block_ids": ["b2", "b3"], "after": "start"}) == "Moved 2 block(s) after start."
+    assert registry.execute("move_blocks", {"block_ids": ["b2", "b3"], "after": "start"}).startswith("Moved 2 block(s) after start.")
     assert [text for _, text in order(doc)] == ["two", "three", "fresh", "one"]
     assert registry.execute("move_blocks", {"block_ids": ["b2"], "after": "b2"}).startswith("Error: after='b2' is one of")
     listing = registry.execute("list_revisions", {})

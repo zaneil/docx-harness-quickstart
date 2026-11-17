@@ -25,4 +25,4 @@ Comments, PDF rendering, page-layout inspection, and legacy .doc files are not s
 
 - [Public helpers](https://raw.githubusercontent.com/zaneil/docx-harness-quickstart/main/src/docx_harness/api.py): `create_agent`, `draft`, `adraft`, and `adraft_many`.
 - [Document API](https://raw.githubusercontent.com/zaneil/docx-harness-quickstart/main/src/docx_harness/document/document.py): `WordDocument` operations.
-- [Built-in tools](https://raw.githubusercontent.com/zaneil/docx-harness-quickstart/main/src/docx_harness/tools/builtin.py): Tool names, parameters, and behavior.
+- [Built-in tools](https://raw.githubusercontent.com/zaneil/docx-harness-quickstart/main/src/docx_harness/tools/builtin/__init__.py): Tool groups; each group's module holds its tools' names, parameters, and behavior.

@@ -47,9 +47,10 @@ class ToolRegistry:
         return list(self._tools)
 
     def to_openai_schema(self, read_only: bool = False) -> list[dict]:
-        """Tool definitions in OpenAI ``tools`` format. With ``read_only=True``
-        only tools that do not modify state are included (plan mode)."""
-        return [t.to_openai() for t in self if t.read_only or not read_only]
+        """Tool definitions in OpenAI ``tools`` format, for the tools available
+        now. With ``read_only=True`` only tools that do not modify state are
+        included (plan mode)."""
+        return [t.to_openai() for t in self if (t.read_only or not read_only) and t.is_available()]
 
     async def aexecute(self, name: str, arguments: str | dict | None = None, *, read_only: bool = False) -> str:
         """Run a tool call and return its result as text."""
