@@ -171,6 +171,33 @@ def test_normalize_keeps_markers_when_document_has_no_list_style():
     assert normalize_paragraphs([{"text": "- a\n- b"}], available_styles={"normal"}) == [{"text": "- a\n- b", "style": None}]
 
 
+def test_normalize_turns_lone_dash_paragraphs_into_bullets():
+    from docx_harness.tools.builtin import normalize_paragraphs
+
+    styles = {"normal", "list bullet", "quote"}
+    assert normalize_paragraphs(
+        [
+            {"text": "- March 3: move day"},                    # seen in eval runs, one item per paragraph
+            {"text": "* Pack your desk", "style": "Normal"},
+            {"text": "• Return badges"},
+        ],
+        available_styles=styles,
+    ) == [
+        {"text": "March 3: move day", "style": "List Bullet"},
+        {"text": "Pack your desk", "style": "List Bullet"},
+        {"text": "Return badges", "style": "List Bullet"},
+    ]
+    for kept in (
+        {"text": "- 5 degrees is cold"},                        # reads as a negative number
+        {"text": "– Jane Doe"},                                 # en dash attribution
+        {"text": "1. Introduction"},                            # often a numbered heading
+        {"text": "*bold* claim"},                               # emphasis, no space after the marker
+        {"text": "- a quote", "style": "Quote"},                # an explicit non-list style wins
+    ):
+        assert normalize_paragraphs([kept], available_styles=styles) == [{"text": kept["text"], "style": kept.get("style")}]
+    assert normalize_paragraphs([{"text": "- one"}], available_styles={"normal"}) == [{"text": "- one", "style": None}]
+
+
 async def test_teaching_messages(doc):
     registry = ToolRegistry(default_tools(doc))
     await registry.aexecute("insert_paragraphs", {"paragraphs": [{"text": "## Scope"}]})
