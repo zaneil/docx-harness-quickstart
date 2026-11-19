@@ -15,3 +15,5 @@ build/
 /TODO.md
 # eval run output
 /evals/results/
+# run traces (--trace / --trace-dir)
+/traces/

@@ -170,3 +170,36 @@ def test_usage_is_reported_after_the_reply(ui):
     events = post_stream("/chat", {"message": "say hello"})
     assert [e["type"] for e in events] == ["tool", "reply", "usage", "state"]
     assert events[2]["text"] == "2 steps · 1.5k in / 20 out · $0.0010"
+
+
+def test_trace_dir_writes_one_file_per_conversation(tmp_path):
+    llm = ScriptedLLM([])
+    server = make_server(port=0, llm_factory=lambda: llm, trace_dir=tmp_path)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def post(path, payload):
+        req = urllib.request.Request(base + path, data=json.dumps(payload).encode(), headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return response.read()
+
+    try:
+        llm.turns = [assistant(paragraphs("Hello")), assistant(content="Done.")]
+        post("/chat", {"message": "say hello"})
+        llm.turns = [assistant(content="Here is the plan.")]
+        post("/chat", {"message": "plan something", "plan": True})
+        post("/reset", {})
+        llm.turns = [assistant(content="Hi.")]
+        post("/chat", {"message": "new conversation"})
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    files = sorted(tmp_path.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+    assert len(files) == 2
+    first = [json.loads(line) for line in files[0].read_text().splitlines()]
+    starts = [r for r in first if r["type"] == "run_start"]
+    assert [(r["mode"], r["instruction"]) for r in starts] == [("run", "say hello"), ("plan", "plan something")]
+    assert [r["type"] for r in first].count("run_end") == 2
+    assert "tool_call" in [r["type"] for r in first] and "plan" in [r["type"] for r in first]

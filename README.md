@@ -59,7 +59,12 @@ uv run docx-harness "Restructure this into an executive summary plus appendix" -
 
 # Tracked changes: every edit is saved as a redline to accept or reject in Word
 uv run docx-harness "Shorten the payment terms to 30 days and fix the typos" -i contract.docx -o contract-redline.docx --track-changes --author "Review Agent"
+
+# Keep a trace of the run: every model reply, tool call and result, with timings and usage
+uv run docx-harness "Fix the typos" -i report.docx -o report-v2.docx --trace traces/runs.jsonl
 ```
+
+After each run the CLI prints the number of model calls, tokens and, when the provider reports it, the cost (`5 steps · 21.4k in / 640 out · $0.0041`).
 
 Python:
 
@@ -81,12 +86,26 @@ draft("Make the tone more formal", "memo.docx", "memo-redline.docx", track_chang
 ### Chat UI for testing
 
 ```bash
-uv run docx-harness-ui        # opens http://127.0.0.1:8765
+uv run docx-harness-ui                      # opens http://127.0.0.1:8765
+uv run docx-harness-ui --trace-dir traces   # also write each conversation to traces/<time>_<id>.jsonl
 ```
 
 A small local page with a chat on the left and a live preview of the document on the right. Start from the blank template or upload a `.docx`, keep chatting to refine it (the conversation and block ids carry over between messages), tick **Plan first** to review a plan before anything changes, and download the result. It is a test tool: one in-memory session, standard library only, bound to localhost. The preview is approximate; open the downloaded file in Word for the real rendering.
 
 To continue a conversation in your own code, pass the previous result's messages back in: `agent.arun("now make it shorter", history=result.messages)`.
+
+### Traces
+
+`--trace` (CLI), `--trace-dir` (UI) and `JsonlTrace` (Python) write one JSON object per line: `run_start`, then the agent's `assistant`, `tool_call`, `tool_result` and `plan` events, then `run_end` with status, steps, final text and token usage. Records of one run share a `run` id and carry `ts` and `elapsed_ms`. Query a folder of them with DuckDB or pandas, for example the slowest and most failing tools:
+
+```sql
+select name, count(*) as calls, avg(elapsed_ms) as avg_ms,
+       count(*) filter (where result like 'Error%') as errors
+from read_json_auto('traces/*.jsonl', union_by_name = true)
+where type = 'tool_result' group by name order by calls desc;
+```
+
+In your own code: `trace = JsonlTrace("run.jsonl")`, `trace.start(instruction)`, pass `on_event=trace.chain()` to `create_agent`, then `trace.end(result, llm.usage)`.
 
 ## Architecture
 
