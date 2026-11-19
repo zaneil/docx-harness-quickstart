@@ -21,6 +21,26 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "openai/gpt-4.1-mini"
 
 
+def _tokens(count: int) -> str:
+    return f"{count / 1000:.1f}k" if count >= 1000 else str(count)
+
+
+def format_usage(usage: dict | None, steps: int | None = None) -> str:
+    """One line for people, such as ``12 steps · 48.2k in / 3.1k out · $0.0042``.
+
+    ``usage`` is the dict an :class:`OpenAICompatibleClient` keeps on ``.usage``
+    (``cost`` only when the provider reports it). Returns ``""`` without usage.
+    """
+    if not usage or not usage.get("requests"):
+        return ""
+    parts = [f"{steps} step{'s' if steps != 1 else ''}"] if steps is not None else []
+    parts.append(f"{_tokens(usage.get('prompt_tokens', 0))} in / {_tokens(usage.get('completion_tokens', 0))} out")
+    cost = usage.get("cost")
+    if isinstance(cost, (int, float)):
+        parts.append(f"${cost:.4f}" if cost < 1 else f"${cost:.2f}")
+    return " · ".join(parts)
+
+
 @runtime_checkable
 class LLMClient(Protocol):
     async def acomplete(self, messages: list[dict], tools: list[dict] | None = None) -> dict: ...
