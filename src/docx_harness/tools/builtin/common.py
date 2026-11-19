@@ -12,6 +12,9 @@ from ...document.builtin_styles import ALL as BUILTIN_STYLES
 _BULLET = re.compile(r"^\s*[-*•–]\s+")
 _HEADING = re.compile(r"^\s*(#{1,3})\s+(.*)$")
 _NUMBER = re.compile(r"^\s*\d+[.)]\s+")
+# A lone "- item" paragraph: only -, * and • (an en dash is often an attribution),
+# and not followed by a digit ("- 5 degrees" reads as a negative number).
+_LONE_BULLET = re.compile(r"^\s*[-*•]\s+(?=\D)")
 _MD_LINK = re.compile(r"\[([^\[\]]+)\]\(((?:https?://|mailto:)[^\s()]+)\)")
 #: Well-known styles the document layer adds to a file the first time they are used.
 CREATABLE_STYLES = sorted({style.name.lower() for style in BUILTIN_STYLES if style.type == "paragraph"})
@@ -119,6 +122,14 @@ def normalize_paragraphs(items: list, available_styles: set[str]) -> list[dict]:
                     handled = True
                 break
         if handled:
+            continue
+        if (
+            len(lines) == 1
+            and (style is None or style.lower() == "normal")
+            and "list bullet" in available_styles
+            and _LONE_BULLET.match(text)
+        ):
+            out.append(_item(_LONE_BULLET.sub("", text).strip(), "List Bullet", level))
             continue
         if "\n\n" in text:
             out.extend(_item(part.strip(), style, level) for part in re.split(r"\n\s*\n", text) if part.strip())
