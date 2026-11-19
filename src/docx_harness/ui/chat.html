@@ -36,6 +36,7 @@
   .msg.plan .actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .msg.plan .actions span { color: var(--muted); font-size: 12px; }
   .tool { align-self: flex-start; color: var(--muted); font: 12px/1.4 ui-monospace, Menlo, monospace; overflow-wrap: anywhere; }
+  .usage { align-self: flex-start; margin-top: -6px; color: var(--muted); font-size: 11px; }
   .error { align-self: flex-start; color: var(--err); font-size: 13px; overflow-wrap: anywhere; }
   .hint { color: var(--muted); text-align: center; margin: auto 0; padding: 0 16px; }
   form { border-top: 1px solid var(--line); padding: 10px 14px 12px; display: grid; gap: 8px; }
@@ -152,6 +153,7 @@ function handle(event) {
   else if (event.type === "error") add("error", "Error: " + event.text);
   else if (event.type === "reply") add("msg agent", event.text);
   else if (event.type === "plan") addPlan(event.text);
+  else if (event.type === "usage") add("usage", event.text);
   else if (event.type === "state") render(event);
 }
 

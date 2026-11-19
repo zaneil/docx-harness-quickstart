@@ -261,3 +261,14 @@ async def test_tools_offered_follow_the_state_step_by_step(doc):
     await create_agent(doc, llm=llm).arun("add a table")
     names = [{t["function"]["name"] for t in request["tools"]} for request in llm.requests]
     assert "set_table_cell" not in names[0] and "set_table_cell" in names[1]
+
+
+def test_format_usage():
+    from docx_harness.agent import format_usage
+
+    usage = {"prompt_tokens": 48_210, "completion_tokens": 812, "requests": 12, "cost": 0.00423}
+    assert format_usage(usage, 12) == "12 steps · 48.2k in / 812 out · $0.0042"
+    assert format_usage({**usage, "cost": 2.5}, 1) == "1 step · 48.2k in / 812 out · $2.50"
+    del usage["cost"]
+    assert format_usage(usage) == "48.2k in / 812 out"
+    assert format_usage(None) == format_usage({"prompt_tokens": 0, "completion_tokens": 0, "requests": 0}) == ""

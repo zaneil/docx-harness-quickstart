@@ -161,3 +161,12 @@ def test_accept_and_reject_all(ui):
     with pytest.raises(urllib.error.HTTPError) as bad:
         request("/revisions", json.dumps({"action": "shred"}).encode())
     assert bad.value.code == 400
+
+
+def test_usage_is_reported_after_the_reply(ui):
+    llm, _, post_stream = ui
+    llm.usage = {"prompt_tokens": 1500, "completion_tokens": 20, "requests": 2, "cost": 0.001}
+    llm.turns = [assistant(paragraphs("Hello")), assistant(content="Done.")]
+    events = post_stream("/chat", {"message": "say hello"})
+    assert [e["type"] for e in events] == ["tool", "reply", "usage", "state"]
+    assert events[2]["text"] == "2 steps · 1.5k in / 20 out · $0.0010"

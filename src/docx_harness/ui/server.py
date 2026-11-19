@@ -21,7 +21,7 @@ from importlib import resources
 from typing import Callable
 from urllib.parse import quote, unquote
 
-from ..agent import AgentEvent, LLMClient, OpenRouterClient
+from ..agent import AgentEvent, LLMClient, OpenRouterClient, format_usage
 from ..agent.llm import DEFAULT_MODEL
 from ..api import create_agent
 from ..document import PackageError, WordDocument, WordPackage
@@ -197,28 +197,40 @@ def make_handler(session: Session, model_label: str):
                     session.pending.instruction, revise=session.pending, feedback=message
                 )
                 emit({"type": "plan", "text": session.pending.text})
+                self._usage(emit, agent, session.pending.steps)
             elif plan:
                 session.pending = await agent.aplan(message, history=session.history)
                 emit({"type": "plan", "text": session.pending.text})
+                self._usage(emit, agent, session.pending.steps)
             else:
                 result = await agent.arun(message, history=session.history)
                 session.history = result.messages
                 self._reply(emit, result)
+                self._usage(emit, agent, result.steps)
 
         async def _approve(self, emit) -> None:
             if session.pending is None:
                 emit({"type": "error", "text": "There is no plan to approve."})
                 return
-            result = await self._agent(emit).aexecute(session.pending)
+            agent = self._agent(emit)
+            result = await agent.aexecute(session.pending)
             session.history = result.messages
             session.pending = None
             self._reply(emit, result)
+            # Only this request's model calls: the client is new for each request.
+            self._usage(emit, agent, result.steps - result.plan.steps if result.plan else result.steps)
 
         @staticmethod
         def _reply(emit, result) -> None:
             emit({"type": "reply", "text": result.final_text or "(no reply)"})
             if result.status == "max_steps":
                 emit({"type": "error", "text": f"Stopped after {result.steps} steps; the document may be incomplete."})
+
+        @staticmethod
+        def _usage(emit, agent, steps: int) -> None:
+            text = format_usage(getattr(agent.llm, "usage", None), steps)
+            if text:
+                emit({"type": "usage", "text": text})
 
     return Handler
 

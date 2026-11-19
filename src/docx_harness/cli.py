@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .agent import AgentEvent, Plan
+from .agent import AgentEvent, OpenRouterClient, Plan, format_usage
 from .api import draft
 
 
@@ -65,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         pass
 
     try:
+        llm = OpenRouterClient(model=args.model)
         result = draft(
             args.instruction,
             args.input,
@@ -73,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
             approve=None if args.yes or not args.plan else _ask_approval,
             track_changes=args.track_changes,
             author=args.author,
-            model=args.model,
+            llm=llm,
             include_raw=args.raw,
             max_steps=args.max_steps,
             on_event=_printer(args.verbose),
@@ -82,8 +83,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    usage = format_usage(llm.usage, result.steps)
     if result.status == "rejected":
-        print("Plan not approved; nothing was changed.", file=sys.stderr)
+        print("Plan not approved; nothing was changed." + (f" ({usage})" if usage else ""), file=sys.stderr)
         return 1
     if args.plan and args.yes and result.plan:
         print(f"Plan:\n{result.plan.text}\n")
@@ -91,6 +93,8 @@ def main(argv: list[str] | None = None) -> int:
     if result.status == "max_steps":
         print(f"warning: stopped after {result.steps} steps; the document may be incomplete.", file=sys.stderr)
     print(f"Saved {args.output}" + (" with tracked changes" if args.track_changes else ""), file=sys.stderr)
+    if usage:
+        print(usage, file=sys.stderr)
     return 0
 
 
