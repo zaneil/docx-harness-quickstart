@@ -15,9 +15,12 @@ import asyncio
 import json
 import os
 import threading
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
+from datetime import datetime
+from pathlib import Path
 from typing import Callable
 from urllib.parse import quote, unquote
 
@@ -25,6 +28,7 @@ from ..agent import AgentEvent, LLMClient, OpenRouterClient, format_usage
 from ..agent.llm import DEFAULT_MODEL
 from ..api import create_agent
 from ..document import PackageError, WordDocument, WordPackage
+from ..trace import JsonlTrace
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
@@ -33,8 +37,10 @@ ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
 class Session:
     """The one document and conversation the UI is working on."""
 
-    def __init__(self, llm_factory: Callable[[], LLMClient]):
+    def __init__(self, llm_factory: Callable[[], LLMClient], trace_dir: str | os.PathLike | None = None):
         self.llm_factory = llm_factory
+        self.trace_dir = Path(trace_dir) if trace_dir else None
+        self.trace: JsonlTrace | None = None
         self.lock = threading.Lock()
         self.track_changes = False
         self.reset()
@@ -45,6 +51,10 @@ class Session:
         self.name = name or "document.docx"
         self.history: list[dict] | None = None
         self.pending = None  # a Plan awaiting approval
+        if self.trace_dir:
+            # A new file per conversation; it appears with the first message.
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            self.trace = JsonlTrace(self.trace_dir / f"{stamp}_{uuid.uuid4().hex[:6]}.jsonl")
 
     def state(self) -> dict:
         return {
@@ -97,6 +107,8 @@ def make_handler(session: Session, model_label: str):
                     asyncio.run(work(emit))
                 except Exception as exc:  # noqa: BLE001 - shown in the chat
                     emit({"type": "error", "text": str(exc) or type(exc).__name__})
+                    if session.trace and session.trace.run:
+                        session.trace.end(status="error", error=str(exc) or type(exc).__name__)
                 emit({"type": "state", **session.state()})
 
         def _agent(self, emit):
@@ -106,8 +118,23 @@ def make_handler(session: Session, model_label: str):
                 elif event.type == "tool_result" and event.data["result"].startswith("Error"):
                     emit({"type": "tool_error", "text": event.data["result"][:300]})
 
+            if session.trace:
+                on_event = session.trace.chain(on_event)
             # Pictures come from the folder the server was started in, nowhere else.
             return create_agent(session.doc, llm=session.llm_factory(), on_event=on_event, image_root=os.getcwd())
+
+        @staticmethod
+        def _trace_start(agent, instruction: str, mode: str) -> None:
+            if session.trace:
+                session.trace.start(
+                    instruction, source="ui", mode=mode, model=getattr(agent.llm, "model", None),
+                    document=session.name, track_changes=session.track_changes,
+                )
+
+        @staticmethod
+        def _trace_end(agent, result=None, **extra) -> None:
+            if session.trace:
+                session.trace.end(result, getattr(agent.llm, "usage", None), **extra)
 
         # ---------------------------------------------------------- routing
 
@@ -193,32 +220,40 @@ def make_handler(session: Session, model_label: str):
             agent = self._agent(emit)
             if session.pending is not None:
                 # A plan is waiting: treat the message as feedback on it.
+                self._trace_start(agent, message, "revise_plan")
                 session.pending = await agent.aplan(
                     session.pending.instruction, revise=session.pending, feedback=message
                 )
                 emit({"type": "plan", "text": session.pending.text})
                 self._usage(emit, agent, session.pending.steps)
+                self._trace_end(agent, status="planned", steps=session.pending.steps, plan=session.pending.text)
             elif plan:
+                self._trace_start(agent, message, "plan")
                 session.pending = await agent.aplan(message, history=session.history)
                 emit({"type": "plan", "text": session.pending.text})
                 self._usage(emit, agent, session.pending.steps)
+                self._trace_end(agent, status="planned", steps=session.pending.steps, plan=session.pending.text)
             else:
+                self._trace_start(agent, message, "run")
                 result = await agent.arun(message, history=session.history)
                 session.history = result.messages
                 self._reply(emit, result)
                 self._usage(emit, agent, result.steps)
+                self._trace_end(agent, result)
 
         async def _approve(self, emit) -> None:
             if session.pending is None:
                 emit({"type": "error", "text": "There is no plan to approve."})
                 return
             agent = self._agent(emit)
+            self._trace_start(agent, session.pending.instruction, "approve")
             result = await agent.aexecute(session.pending)
             session.history = result.messages
             session.pending = None
             self._reply(emit, result)
             # Only this request's model calls: the client is new for each request.
             self._usage(emit, agent, result.steps - result.plan.steps if result.plan else result.steps)
+            self._trace_end(agent, result)
 
         @staticmethod
         def _reply(emit, result) -> None:
@@ -239,16 +274,18 @@ def make_server(
     port: int = 8765,
     model: str | None = None,
     llm_factory: Callable[[], LLMClient] | None = None,
+    trace_dir: str | os.PathLike | None = None,
 ) -> ThreadingHTTPServer:
     """Build the server (not yet serving). ``llm_factory`` lets tests and
-    custom setups supply their own client."""
+    custom setups supply their own client. With ``trace_dir`` each
+    conversation is written to a JSONL file there (see ``docx_harness.trace``)."""
     if llm_factory is None:
         client = OpenRouterClient(model=model)  # fails early if the key is missing
         label = client.model
         llm_factory = lambda: OpenRouterClient(model=model)  # noqa: E731
     else:
         label = model or "custom client"
-    session = Session(llm_factory)
+    session = Session(llm_factory, trace_dir)
     server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(session, label))
     server.session = session  # type: ignore[attr-defined]
     return server
@@ -259,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--model", help=f"OpenRouter model id (default: {DEFAULT_MODEL} or $DOCX_HARNESS_MODEL).")
     parser.add_argument("--no-browser", action="store_true", help="Do not open a browser tab.")
+    parser.add_argument("--trace-dir", metavar="DIR", help="Write each conversation (model replies, tool calls and results, usage) to a JSONL file in DIR.")
     args = parser.parse_args(argv)
 
     try:
@@ -269,12 +307,14 @@ def main(argv: list[str] | None = None) -> int:
         pass
 
     try:
-        server = make_server(args.port, args.model)
+        server = make_server(args.port, args.model, trace_dir=args.trace_dir)
     except (RuntimeError, OSError) as exc:
         print(f"error: {exc}")
         return 1
     url = f"http://127.0.0.1:{server.server_address[1]}"
     print(f"docx-harness UI running at {url}  (Ctrl+C to stop)")
+    if args.trace_dir:
+        print(f"Writing traces to {Path(args.trace_dir).resolve()}")
     if not args.no_browser:
         threading.Timer(0.3, webbrowser.open, [url]).start()
     try:

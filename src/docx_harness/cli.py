@@ -12,6 +12,7 @@ import sys
 
 from .agent import AgentEvent, OpenRouterClient, Plan, format_usage
 from .api import draft
+from .trace import JsonlTrace
 
 
 def _printer(verbose: bool):
@@ -55,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--raw", action="store_true", help="Also give the agent the raw XML write tool.")
     parser.add_argument("--max-steps", type=int, default=40, help="Maximum model calls (default: 40).")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show full tool calls and results.")
+    parser.add_argument("--trace", metavar="PATH", help="Append every model reply, tool call and result of the run to this JSONL file.")
     args = parser.parse_args(argv)
 
     try:
@@ -64,8 +66,17 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError:
         pass
 
+    trace = JsonlTrace(args.trace) if args.trace else None
+    on_event = _printer(args.verbose)
+    llm = None
     try:
         llm = OpenRouterClient(model=args.model)
+        if trace:
+            trace.start(
+                args.instruction, source="cli", model=getattr(llm, "model", None), input=args.input, output=args.output,
+                plan=args.plan, track_changes=args.track_changes, max_steps=args.max_steps,
+            )
+            on_event = trace.chain(on_event)
         result = draft(
             args.instruction,
             args.input,
@@ -77,13 +88,18 @@ def main(argv: list[str] | None = None) -> int:
             llm=llm,
             include_raw=args.raw,
             max_steps=args.max_steps,
-            on_event=_printer(args.verbose),
+            on_event=on_event,
         )
     except Exception as exc:  # noqa: BLE001 - top-level CLI error report
+        if trace and trace.run:
+            trace.end(usage=getattr(llm, "usage", None), status="error", error=str(exc) or type(exc).__name__)
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    usage = format_usage(llm.usage, result.steps)
+    if trace:
+        trace.end(result, getattr(llm, "usage", None))
+
+    usage = format_usage(getattr(llm, "usage", None), result.steps)
     if result.status == "rejected":
         print("Plan not approved; nothing was changed." + (f" ({usage})" if usage else ""), file=sys.stderr)
         return 1

@@ -20,6 +20,7 @@ from .agent import (
 from .api import adraft, adraft_many, create_agent, draft
 from .document import DocumentError, EditContext, PackageError, StyleError, WordDocument, WordPackage
 from .tools import Tool, ToolRegistry, default_tools, tool
+from .trace import JsonlTrace
 
 __version__ = "0.1.0"
 
@@ -28,5 +29,5 @@ __all__ = [
     "Tool", "ToolRegistry", "tool", "default_tools",
     "Agent", "AgentEvent", "AgentResult", "Plan",
     "LLMClient", "OpenAICompatibleClient", "OpenRouterClient", "WORD_SYSTEM_PROMPT",
-    "create_agent", "draft", "adraft", "adraft_many",
+    "create_agent", "draft", "adraft", "adraft_many", "JsonlTrace",
 ]

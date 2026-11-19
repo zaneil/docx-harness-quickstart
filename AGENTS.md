@@ -25,6 +25,7 @@ uv run pytest tests/test_document.py -k replace   # one area
 uv run docx-harness "Draft a memo about X" -o memo.docx          # needs OPENROUTER_API_KEY in .env
 uv run docx-harness "Fix the typos" -i in.docx -o out.docx --plan
 uv run docx-harness-ui                    # local chat UI at http://127.0.0.1:8765
+uv run docx-harness-ui --trace-dir traces # also write each conversation to a JSONL trace (CLI: --trace PATH)
 uv run python scripts/build_template.py   # regenerate the bundled blank.docx after editing the script
 uv run python -m evals check              # offline: every eval task fails untouched and passes with its solution
 uv run python -m evals run -k fix-typos   # live eval on a real model; needs OPENROUTER_API_KEY and costs tokens
