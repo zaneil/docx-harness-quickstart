@@ -272,3 +272,91 @@ def test_format_usage():
     del usage["cost"]
     assert format_usage(usage) == "48.2k in / 812 out"
     assert format_usage(None) == format_usage({"prompt_tokens": 0, "completion_tokens": 0, "requests": 0}) == ""
+
+
+# ---------------------------------------------------------------- retries
+
+
+def _fake_client(replies, **kwargs):
+    from types import SimpleNamespace
+
+    from docx_harness import OpenAICompatibleClient
+
+    calls = []
+
+    async def create(**request):
+        calls.append(request)
+        return replies.pop(0)
+
+    client = OpenAICompatibleClient("some/model", api_key="k", **kwargs)
+    client._get_client = lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    return client, calls
+
+
+def _ok():
+    from types import SimpleNamespace
+
+    message = SimpleNamespace(content="hi", tool_calls=None)
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5)
+    return SimpleNamespace(usage=usage, choices=[SimpleNamespace(message=message)])
+
+
+def _failed(code=502, message="Upstream provider error"):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(usage=None, choices=None, error={"code": code, "message": message})
+
+
+@pytest.fixture
+def sleeps(monkeypatch):
+    import docx_harness.agent.llm as llm_module
+
+    delays = []
+
+    async def fake_sleep(seconds):
+        delays.append(seconds)
+
+    monkeypatch.setattr(llm_module.asyncio, "sleep", fake_sleep)
+    return delays
+
+
+async def test_reply_without_choices_is_retried(sleeps):
+    client, calls = _fake_client([_failed(), _failed(), _ok()])
+    reply = await client.acomplete([{"role": "user", "content": "x"}])
+    assert reply == {"role": "assistant", "content": "hi"}
+    assert len(calls) == 3
+    assert len(sleeps) == 2 and sleeps[1] > sleeps[0]
+    assert client.usage == {"prompt_tokens": 10, "completion_tokens": 5, "requests": 1}
+
+
+async def test_retries_give_up_with_provider_message(sleeps):
+    from docx_harness import LLMError
+
+    client, calls = _fake_client([_failed() for _ in range(3)], max_retries=2)
+    with pytest.raises(LLMError, match="Upstream provider error") as info:
+        await client.acomplete([{"role": "user", "content": "x"}])
+    assert info.value.code == 502
+    assert len(calls) == 3 and len(sleeps) == 2
+
+
+async def test_permanent_error_is_not_retried(sleeps):
+    from docx_harness import LLMError
+
+    client, calls = _fake_client([_failed(401, "No auth credentials found")])
+    with pytest.raises(LLMError, match="No auth credentials"):
+        await client.acomplete([{"role": "user", "content": "x"}])
+    assert len(calls) == 1 and sleeps == []
+
+
+async def test_retry_and_timeout_settings_reach_the_sdk(monkeypatch):
+    import openai
+
+    from docx_harness import OpenAICompatibleClient
+
+    seen = {}
+    monkeypatch.setattr(openai, "AsyncOpenAI", lambda **kwargs: seen.update(kwargs) or object())
+    OpenAICompatibleClient("m", api_key="k", max_retries=7, timeout=30)._get_client()
+    assert seen["max_retries"] == 7 and seen["timeout"] == 30
+    seen.clear()
+    OpenAICompatibleClient("m", api_key="k")._get_client()
+    assert seen["max_retries"] == 4 and seen["timeout"] == 120.0
