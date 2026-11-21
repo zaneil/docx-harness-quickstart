@@ -14,11 +14,45 @@ Anything that implements that method is a valid client.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import random
 from typing import Any, Protocol, runtime_checkable
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "openai/gpt-4.1-mini"
+
+log = logging.getLogger(__name__)
+
+#: Error codes in a 200 reply that another attempt will not fix
+#: (bad request, bad key, out of credits, refused by moderation).
+_PERMANENT_CODES = {400, 401, 402, 403}
+
+
+class LLMError(RuntimeError):
+    """The endpoint answered, but with an error instead of a reply."""
+
+    def __init__(self, message: str, code: int | None = None):
+        super().__init__(message)
+        self.code = code
+
+
+def _reply_error(response: Any) -> LLMError:
+    """Describe a response that has no choices. OpenRouter puts the upstream
+    provider's failure in an ``error`` field of an HTTP 200 body."""
+    error = getattr(response, "error", None)
+    if isinstance(error, dict):
+        code, message = error.get("code"), error.get("message")
+    else:
+        code, message = getattr(error, "code", None), getattr(error, "message", None)
+    try:
+        code = int(code) if code is not None else None
+    except (TypeError, ValueError):
+        code = None
+    text = f"Model returned no reply: {message or 'empty response'}"
+    if code is not None:
+        text += f" (code {code})"
+    return LLMError(text, code)
 
 
 def _tokens(count: int) -> str:
@@ -48,7 +82,14 @@ class LLMClient(Protocol):
 
 class OpenAICompatibleClient:
     """Client for any endpoint that speaks the OpenAI chat-completions API
-    (OpenRouter, OpenAI, LiteLLM proxy, Ollama, vLLM...)."""
+    (OpenRouter, OpenAI, LiteLLM proxy, Ollama, vLLM...).
+
+    Failed calls are retried up to ``max_retries`` times with exponential
+    backoff: connection errors, timeouts, 408, 409, 429 and 5xx by the
+    ``openai`` SDK (which honours ``Retry-After``), and replies that arrive
+    with no choices (an upstream failure reported in an HTTP 200) here.
+    ``timeout`` is the limit per request, in seconds.
+    """
 
     def __init__(
         self,
@@ -57,12 +98,16 @@ class OpenAICompatibleClient:
         base_url: str | None = None,
         *,
         parallel_tool_calls: bool = True,
+        max_retries: int = 4,
+        timeout: float | None = 120.0,
         **request_options: Any,
     ):
         self.model = model
         self.api_key = api_key
         self.base_url = base_url
         self.parallel_tool_calls = parallel_tool_calls
+        self.max_retries = max_retries
+        self.timeout = timeout
         self.request_options = request_options
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "requests": 0}
         self._client = None
@@ -75,9 +120,29 @@ class OpenAICompatibleClient:
         if self._client is None or self._loop is not loop:
             from openai import AsyncOpenAI
 
-            self._client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
+            self._client = AsyncOpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                max_retries=self.max_retries,
+                timeout=self.timeout,
+            )
             self._loop = loop
         return self._client
+
+    async def _create(self, request: dict[str, Any]) -> Any:
+        """Send the request; retry replies that came back without choices."""
+        attempt = 0
+        while True:
+            response = await self._get_client().chat.completions.create(**request)
+            if getattr(response, "choices", None):
+                return response
+            error = _reply_error(response)
+            if error.code in _PERMANENT_CODES or attempt >= self.max_retries:
+                raise error
+            delay = min(0.5 * 2**attempt, 8.0) * random.uniform(0.8, 1.2)
+            log.warning("%s; retrying in %.1fs", error, delay)
+            await asyncio.sleep(delay)
+            attempt += 1
 
     async def acomplete(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
         request: dict[str, Any] = {"model": self.model, "messages": messages, **self.request_options}
@@ -85,7 +150,7 @@ class OpenAICompatibleClient:
             request["tools"] = tools
             if self.parallel_tool_calls:
                 request["parallel_tool_calls"] = True
-        response = await self._get_client().chat.completions.create(**request)
+        response = await self._create(request)
         if response.usage:
             self.usage["prompt_tokens"] += response.usage.prompt_tokens or 0
             self.usage["completion_tokens"] += response.usage.completion_tokens or 0
