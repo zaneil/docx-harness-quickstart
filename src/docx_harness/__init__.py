@@ -12,6 +12,7 @@ from .agent import (
     AgentEvent,
     AgentResult,
     LLMClient,
+    LLMError,
     OpenAICompatibleClient,
     OpenRouterClient,
     Plan,
@@ -28,6 +29,6 @@ __all__ = [
     "WordDocument", "WordPackage", "EditContext", "DocumentError", "PackageError", "StyleError",
     "Tool", "ToolRegistry", "tool", "default_tools",
     "Agent", "AgentEvent", "AgentResult", "Plan",
-    "LLMClient", "OpenAICompatibleClient", "OpenRouterClient", "WORD_SYSTEM_PROMPT",
+    "LLMClient", "LLMError", "OpenAICompatibleClient", "OpenRouterClient", "WORD_SYSTEM_PROMPT",
     "create_agent", "draft", "adraft", "adraft_many", "JsonlTrace",
 ]

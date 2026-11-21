@@ -255,6 +255,8 @@ class MyClient:
 
 For any OpenAI-compatible endpoint (OpenAI, a LiteLLM proxy, Ollama, vLLM) use `OpenAICompatibleClient(model, api_key=..., base_url=...)`.
 
+Both built-in clients retry failed calls (connection errors, timeouts, 429, 5xx, and replies that arrive with no choices) with exponential backoff, honouring `Retry-After`. Set `max_retries=` (default 4) and `timeout=` (seconds per request, default 120) on the client; a call that still fails raises, and an error the provider reports in its reply raises `LLMError` with the provider's message.
+
 Runnable versions of these are in [`examples/`](examples).
 
 ## Tracked changes
