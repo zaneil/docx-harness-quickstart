@@ -13,7 +13,7 @@ import re
 
 from docx_harness import LLMClient, WordDocument
 
-DEFAULT_JUDGE_MODEL = "openai/gpt-4.1"
+DEFAULT_JUDGE_MODEL = "openai/gpt-6.1-terra"
 
 JUDGE_PROMPT = """\
 You are grading the work of an assistant that was asked to draft or edit a Word document.

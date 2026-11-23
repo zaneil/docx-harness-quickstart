@@ -1,7 +1,7 @@
 """Write what happens in a run to a JSONL file, one JSON object per line.
 
     trace = JsonlTrace("traces/run.jsonl")
-    trace.start("Fix the typos", model="openai/gpt-4.1-mini")
+    trace.start("Fix the typos", model="openai/gpt-6-luna")
     agent = create_agent(doc, llm=llm, on_event=trace.chain(my_callback))
     result = agent.run("Fix the typos")
     trace.end(result, llm.usage)

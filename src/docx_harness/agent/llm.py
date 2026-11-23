@@ -20,7 +20,7 @@ import random
 from typing import Any, Protocol, runtime_checkable
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = "openai/gpt-4.1-mini"
+DEFAULT_MODEL = "openai/gpt-6-luna"
 
 log = logging.getLogger(__name__)
 
@@ -177,7 +177,7 @@ class OpenRouterClient(OpenAICompatibleClient):
     """OpenRouter through the ``openai`` SDK.
 
     The key comes from ``api_key`` or ``OPENROUTER_API_KEY``; the model from
-    ``model``, ``DOCX_HARNESS_MODEL`` or the default ``openai/gpt-4.1-mini``.
+    ``model``, ``DOCX_HARNESS_MODEL`` or the default ``openai/gpt-6-luna``.
     """
 
     def __init__(self, model: str | None = None, api_key: str | None = None, **kwargs: Any):
