@@ -14,7 +14,7 @@ Three layers with a strict one-way dependency: `agent` → `tools` → `document
 | Tools | `src/docx_harness/tools/` | LLM-callable functions with JSON schemas, in groups (`default_tools(doc, groups=...)`) | `agent` |
 | Agent | `src/docx_harness/agent/` | Generic async tool-calling loop, plan mode, LLM client | `document` (it knows nothing about Word) |
 
-`src/docx_harness/api.py` wires the three together (`create_agent`, `draft`, `adraft`, `adraft_many`). `cli.py` and `ui/` are thin front ends over `api.py`.
+`src/docx_harness/api.py` wires the three together (`create_agent`, `draft`, `adraft`, `adraft_many`). `cli.py` is a thin front end over `api.py`. `demo/` (repo root) is a demo chat UI over the public API; it is not part of the library or the wheel.
 
 ## Commands
 
@@ -24,8 +24,8 @@ uv run pytest                             # full test suite, about 3 seconds, no
 uv run pytest tests/test_document.py -k replace   # one area
 uv run docx-harness "Draft a memo about X" -o memo.docx          # needs OPENROUTER_API_KEY in .env
 uv run docx-harness "Fix the typos" -i in.docx -o out.docx --plan
-uv run docx-harness-ui                    # local chat UI at http://127.0.0.1:8765
-uv run docx-harness-ui --trace-dir traces # also write each conversation to a JSONL trace (CLI: --trace PATH)
+uv run python -m demo                     # demo chat UI (not shipped) at http://127.0.0.1:8765
+uv run python -m demo --trace-dir traces  # also write each conversation to a JSONL trace (CLI: --trace PATH)
 uv run python scripts/build_template.py   # regenerate the bundled blank.docx after editing the script
 uv run python -m evals check              # offline: every eval task fails untouched and passes with its solution
 uv run python -m evals run -k fix-typos   # live eval on a real model; needs OPENROUTER_API_KEY and costs tokens
@@ -47,7 +47,7 @@ Run `uv run pytest` before finishing any change. Tests use a scripted fake model
 | Change lists (levels, restarts, the list definitions) | `document/numbering.py`; `_place_in_list`, `set_list_level`, `restart_numbering` in `document/lists.py` | `tests/test_content.py` |
 | Change hyperlinks, pictures, headers and footers | `document/media.py` (`add_hyperlink`, `insert_image`), `document/stories.py` (`_set_header_footer`), `document/images.py`; new parts and relationships go through `WordPackage.add_part` / `relate` | `tests/test_content.py`, `tests/test_package.py` |
 | Change how tracked changes (redlines) are recorded, accepted or rejected | `document/edits.py` (`EditContext`); listing and selection in `document/revisions.py` (`_resolve`); reading helpers in `document/ooxml.py` | `tests/test_tracked.py` |
-| Change the chat UI | `ui/server.py`, `ui/chat.html` | `tests/test_ui.py` |
+| Change the demo UI (not part of the library) | `demo/server.py`, `demo/chat.html` | `tests/test_ui.py` |
 | Add an eval task | One YAML file in `evals/tasks/<category>/` (format in `evals/README.md`); find block ids for its `solution` with `uv run python -m evals show <id>` | `uv run python -m evals check <id>`, `tests/test_evals.py` |
 | Add an eval check or input step | `evals/checks.py` (`@check`), `evals/builder.py` (`@step`); add a case to `CASES` in the test and a row in `evals/README.md` | `tests/test_evals.py` |
 
@@ -101,6 +101,7 @@ doc.save("out.docx")
 - Harness level: script the model with `ScriptedLLM([assistant(call("tool_name", arg=...)), assistant(content="done")])`.
 - Live: `uv run docx-harness "..." -o out.docx -v` prints every tool call and result.
 - Model behaviour: after changing a prompt in `agent/prompts.py` or a tool's description or arguments, run `uv run python -m evals run` and compare with the table in the README. `evals/` sits above `api.py`, imports only the public `docx_harness` API, and is not shipped in the wheel. A live run is never part of `uv run pytest`.
+- Demo UI: `demo/` likewise imports only the public `docx_harness` API and is not in the wheel; keep library code out of it.
 
 ## Known limits (do not assume these work)
 
