@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>docx-harness</title>
+<title>docx-harness demo</title>
 <style>
   :root {
     --bg: #f3f4f6; --panel: #ffffff; --ink: #1f2328; --muted: #6b7280; --line: #e2e5ea;
@@ -27,6 +27,9 @@
   header { padding: 12px 14px; border-bottom: 1px solid var(--line); }
   header h1 { font-size: 15px; margin: 0; }
   header small { color: var(--muted); }
+  header .badge { display: inline-block; margin-left: 6px; padding: 0 7px; border: 1px solid var(--line); border-radius: 999px;
+                  color: var(--muted); font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .04em; vertical-align: 2px; }
+  header .demo-note { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
   #log { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
   .msg { max-width: 92%; padding: 8px 11px; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .msg.user { align-self: flex-end; background: var(--user); }
@@ -77,7 +80,10 @@
 </head>
 <body>
 <section id="chat">
-  <header><h1>docx-harness</h1><small>Model: {{MODEL}}</small></header>
+  <header>
+    <h1>docx-harness <span class="badge">demo</span></h1><small>Model: {{MODEL}}</small>
+    <p class="demo-note">Demo for trying the library, not part of docx-harness. One local session; the preview is approximate.</p>
+  </header>
   <div id="log"><div class="hint" id="hint">Describe the document you want, or upload a .docx and ask for changes. Keep chatting to refine it.</div></div>
   <form id="form">
     <textarea id="input" placeholder="e.g. Draft a one page proposal for a team offsite with a budget table" autofocus></textarea>

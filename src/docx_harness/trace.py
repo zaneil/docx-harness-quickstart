@@ -6,7 +6,7 @@
     result = agent.run("Fix the typos")
     trace.end(result, llm.usage)
 
-Records share a ``run`` id, so one file can hold many runs (the chat UI writes
+Records share a ``run`` id, so one file can hold many runs (the demo UI writes
 one file per session). Each has ``ts`` (UTC, ISO 8601), ``type`` and
 ``elapsed_ms`` since the previous record of the same run: on an ``assistant``
 record that is roughly the model call, on a ``tool_result`` the tool call

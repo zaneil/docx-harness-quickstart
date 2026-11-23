@@ -1,11 +1,12 @@
-"""A small local chat UI for trying the agent.
+"""Demo / test tool, not part of the docx-harness library.
 
-    docx-harness-ui            # then open http://127.0.0.1:8765
+    uv run python -m demo      # then open http://127.0.0.1:8765
 
-Chat on the left, a live preview of the document on the right. Start from the
-blank template or upload a .docx, keep chatting to refine it, download the
-result. This is a test tool: one in-memory session, standard library only,
-bound to localhost.
+A small local chat UI for trying the agent: chat on the left, a live preview
+of the document on the right. Start from the blank template or upload a .docx,
+keep chatting to refine it, download the result. One in-memory session,
+standard library only, bound to localhost. It uses only the public
+``docx_harness`` API and is not shipped with the package.
 """
 
 from __future__ import annotations
@@ -18,17 +19,15 @@ import threading
 import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from importlib import resources
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 from urllib.parse import quote, unquote
 
-from ..agent import AgentEvent, LLMClient, OpenRouterClient, format_usage
-from ..agent.llm import DEFAULT_MODEL
-from ..api import create_agent
-from ..document import PackageError, WordDocument, WordPackage
-from ..trace import JsonlTrace
+from docx_harness import (
+    AgentEvent, JsonlTrace, LLMClient, OpenRouterClient, PackageError, WordDocument, WordPackage, create_agent,
+)
+from docx_harness.agent import DEFAULT_MODEL, format_usage
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
@@ -67,7 +66,7 @@ class Session:
 
 
 def make_handler(session: Session, model_label: str):
-    page = resources.files("docx_harness.ui").joinpath("chat.html").read_text(encoding="utf-8")
+    page = Path(__file__).with_name("chat.html").read_text(encoding="utf-8")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args) -> None:  # keep the terminal quiet
@@ -292,7 +291,9 @@ def make_server(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="docx-harness-ui", description="Local chat UI for trying docx-harness.")
+    parser = argparse.ArgumentParser(
+        prog="python -m demo", description="Demo chat UI for trying docx-harness (not part of the library)."
+    )
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--model", help=f"OpenRouter model id (default: {DEFAULT_MODEL} or $DOCX_HARNESS_MODEL).")
     parser.add_argument("--no-browser", action="store_true", help="Do not open a browser tab.")
@@ -312,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}")
         return 1
     url = f"http://127.0.0.1:{server.server_address[1]}"
-    print(f"docx-harness UI running at {url}  (Ctrl+C to stop)")
+    print(f"docx-harness demo UI running at {url}  (Ctrl+C to stop)")
     if args.trace_dir:
         print(f"Writing traces to {Path(args.trace_dir).resolve()}")
     if not args.no_browser:

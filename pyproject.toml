@@ -20,7 +20,6 @@ Issues = "https://github.com/zaneil/docx-harness-quickstart/issues"
 
 [project.scripts]
 docx-harness = "docx_harness.cli:main"
-docx-harness-ui = "docx_harness.ui.server:main"
 
 [dependency-groups]
 dev = [
@@ -41,5 +40,5 @@ packages = ["src/docx_harness"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-# so the tests can import the top-level evals package
+# so the tests can import the top-level evals and demo packages
 pythonpath = ["."]

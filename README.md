@@ -83,20 +83,22 @@ draft("Fix the typos and add a summary table", "memo.docx", "memo-v2.docx", plan
 draft("Make the tone more formal", "memo.docx", "memo-redline.docx", track_changes=True, author="Review Agent")
 ```
 
-### Chat UI for testing
+### Demo chat UI (not part of the library)
+
+A demo for trying the agent by hand, not part of the library: it lives in [`demo/`](demo/README.md) at the repo root, uses only the public API, and is not installed with the package. Run it from a source checkout:
 
 ```bash
-uv run docx-harness-ui                      # opens http://127.0.0.1:8765
-uv run docx-harness-ui --trace-dir traces   # also write each conversation to traces/<time>_<id>.jsonl
+uv run python -m demo                       # opens http://127.0.0.1:8765
+uv run python -m demo --trace-dir traces    # also write each conversation to traces/<time>_<id>.jsonl
 ```
 
-A small local page with a chat on the left and a live preview of the document on the right. Start from the blank template or upload a `.docx`, keep chatting to refine it (the conversation and block ids carry over between messages), tick **Plan first** to review a plan before anything changes, and download the result. It is a test tool: one in-memory session, standard library only, bound to localhost. The preview is approximate; open the downloaded file in Word for the real rendering.
+A small local page with a chat on the left and a live preview of the document on the right. Start from the blank template or upload a `.docx`, keep chatting to refine it (the conversation and block ids carry over between messages), tick **Plan first** to review a plan before anything changes, and download the result. One in-memory session, standard library only, bound to localhost. The preview is approximate; open the downloaded file in Word for the real rendering.
 
 To continue a conversation in your own code, pass the previous result's messages back in: `agent.arun("now make it shorter", history=result.messages)`.
 
 ### Traces
 
-`--trace` (CLI), `--trace-dir` (UI) and `JsonlTrace` (Python) write one JSON object per line: `run_start`, then the agent's `assistant`, `tool_call`, `tool_result` and `plan` events, then `run_end` with status, steps, final text and token usage. Records of one run share a `run` id and carry `ts` and `elapsed_ms`. Query a folder of them with DuckDB or pandas, for example the slowest and most failing tools:
+`--trace` (CLI), `--trace-dir` (demo UI) and `JsonlTrace` (Python) write one JSON object per line: `run_start`, then the agent's `assistant`, `tool_call`, `tool_result` and `plan` events, then `run_end` with status, steps, final text and token usage. Records of one run share a `run` id and carry `ts` and `elapsed_ms`. Query a folder of them with DuckDB or pandas, for example the slowest and most failing tools:
 
 ```sql
 select name, count(*) as calls, avg(elapsed_ms) as avg_ms,
@@ -192,7 +194,7 @@ Tables are read and addressed on their column grid, so files with merged cells b
 | Review | `accept_revisions`, `reject_revisions` |
 | Raw package | `list_parts`, `read_part_xml`, and `write_part_xml` (only with `include_raw=True`) |
 
-`insert_paragraphs` takes a `level` per list item and turns `[text](https://address)` into a link. `insert_image` reads any image file the process can; pass `default_tools(doc, image_root=folder)` (or `create_agent(..., image_root=folder)`) to confine it to one folder, as the chat UI does with the folder it was started in.
+`insert_paragraphs` takes a `level` per list item and turns `[text](https://address)` into a link. `insert_image` reads any image file the process can; pass `default_tools(doc, image_root=folder)` (or `create_agent(..., image_root=folder)`) to confine it to one folder, as the demo UI does with the folder it was started in.
 
 The tools come in groups (`read`, `write`, `tables`, `format`, `revisions`, `raw`), one module each under `tools/builtin/`; `default_tools(doc, groups=["read", "write"])` (or `create_agent(..., tool_groups=...)`) takes a subset. To keep prompts small, the `tables` tools are offered to the model only while the document has a table, and the `revisions` tools only while it tracks changes or has some pending; any tool can do the same with `@tool(available=check)`.
 
@@ -286,7 +288,7 @@ doc.accept_revisions()                            # no arguments: everything tha
 - The saved file has Word's own Track Changes switched on (`w:trackRevisions` in `word/settings.xml`), so the reader's edits are tracked too. `doc.track_changes = False` turns both off.
 - `replace_text` and `search` also cover headers, footers, footnotes and endnotes, and those edits are tracked the same way. `doc.stories()` returns their text.
 - A moved paragraph is recorded as a move. Word has no move markup for tables, so a moved table is a deletion plus an insertion.
-- `accept_revisions` and `reject_revisions` resolve insertions, deletions, moves and formatting changes from any author. The agent is told not to use them unless asked. The chat UI has Accept all and Reject all buttons.
+- `accept_revisions` and `reject_revisions` resolve insertions, deletions, moves and formatting changes from any author. The agent is told not to use them unless asked. The demo UI has Accept all and Reject all buttons.
 
 Not recorded, although they take effect: new style definitions, a header or footer part the document did not have, re-pointing an existing link, and resizing a picture or changing its alt text.
 

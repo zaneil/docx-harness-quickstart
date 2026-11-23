@@ -9,7 +9,7 @@ import urllib.request
 import pytest
 
 from docx_harness import WordDocument, WordPackage
-from docx_harness.ui.server import make_server
+from demo.server import make_server
 
 from conftest import ScriptedLLM, assistant, call
 
@@ -44,7 +44,9 @@ def paragraphs(*texts):
 
 def test_page_and_empty_state(ui):
     _, request, _ = ui
-    assert b"docx-harness" in request("/")
+    page = request("/")
+    assert b"docx-harness" in page
+    assert b"not part of docx-harness" in page  # the page says it is a demo
     assert json.loads(request("/state")) == {
         "name": "document.docx", "blocks": [], "pending": None, "track_changes": False, "revisions": 0,
     }
