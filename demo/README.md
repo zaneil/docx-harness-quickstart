@@ -5,7 +5,7 @@ A local page for trying the docx-harness agent by hand. **It is a demo and test 
 ```bash
 uv run python -m demo                       # opens http://127.0.0.1:8765
 uv run python -m demo --trace-dir traces    # also write each conversation to traces/<time>_<id>.jsonl
-uv run python -m demo --port 8768 --no-browser --model openai/gpt-4.1-mini
+uv run python -m demo --port 8768 --no-browser --model openai/gpt-6-luna
 ```
 
 It needs `OPENROUTER_API_KEY` in `.env` (or the environment), like the CLI.

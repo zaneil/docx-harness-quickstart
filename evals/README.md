@@ -6,7 +6,7 @@ Tasks a real model is asked to do with the docx-harness tools, each graded by au
 uv run python -m evals list                         # the tasks
 uv run python -m evals check                        # offline: prove every task with its reference solution
 uv run python -m evals run                          # live, default model (needs OPENROUTER_API_KEY)
-uv run python -m evals run --model openai/gpt-4.1 --model anthropic/claude-sonnet-4.5
+uv run python -m evals run --model openai/gpt-6.1-terra --model anthropic/claude-haiku-5.5
 uv run python -m evals run -k typos --no-judge      # only tasks whose id contains "typos", no judge model
 uv run python -m evals report evals/results/<run> --markdown    # the README table
 ```

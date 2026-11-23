@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .agent import AgentEvent, OpenRouterClient, Plan, format_usage
+from .agent import DEFAULT_MODEL, AgentEvent, OpenRouterClient, Plan, format_usage
 from .api import draft
 from .trace import JsonlTrace
 
@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("instruction", help="What to write or change.")
     parser.add_argument("-i", "--input", help="Existing .docx to edit. Omit to start from the built-in template.")
     parser.add_argument("-o", "--output", default="output.docx", help="Where to save the result (default: output.docx).")
-    parser.add_argument("--model", help="OpenRouter model id (default: openai/gpt-4.1-mini or $DOCX_HARNESS_MODEL).")
+    parser.add_argument("--model", help=f"OpenRouter model id (default: {DEFAULT_MODEL} or $DOCX_HARNESS_MODEL).")
     parser.add_argument("--plan", action="store_true", help="Plan first and ask for approval before changing anything.")
     parser.add_argument("--yes", action="store_true", help="With --plan: approve the plan automatically.")
     parser.add_argument("--track-changes", action="store_true", help="Record the edits as tracked changes (redlines) to accept or reject in Word.")

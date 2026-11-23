@@ -41,7 +41,7 @@ uv sync                      # or: pip install -e .
 cp .env.example .env         # then add your OpenRouter key
 ```
 
-Models are reached through [OpenRouter](https://openrouter.ai) using the `openai` SDK. The default model is `openai/gpt-4.1-mini`; set `DOCX_HARNESS_MODEL` or pass `model=` to use any other.
+Models are reached through [OpenRouter](https://openrouter.ai) using the `openai` SDK. The default model is `openai/gpt-6-luna`; set `DOCX_HARNESS_MODEL` or pass `model=` to use any other.
 
 ## Quickstart
 
@@ -322,13 +322,14 @@ Not covered: edits made through `write_part_xml`; accepting or rejecting tracked
 
 | Model | Passed | Draft | Edit | Redline | Restructure | Tables | Steps per task | Tokens per task | Cost per task | Judge (1-5) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `openai/gpt-4.1-mini` | 19/21 (90%) | 4/4 | 4/5 | 4/4 | 4/4 | 3/4 | 3.6 | 13.7k | $0.0023 | 5.0 |
+| `openai/gpt-6-luna` (default) | 20/21 (95%) | 3/4 | 5/5 | 4/4 | 4/4 | 4/4 | 3.8 | 15.2k | $0.0004 | 4.8 |
+| `openai/gpt-4.1-mini` (previous default) | 19/21 (90%) | 4/4 | 4/5 | 4/4 | 4/4 | 3/4 | 3.6 | 13.7k | $0.0023 | 5.0 |
 
-One run on 2026-11-17 through OpenRouter, judged by `openai/gpt-4.1`. Each task runs once, so expect a task or so of difference between runs: the two failures here (`add-link`, `totals-column`) passed on rerun, and `add-link` fails about one run in three, before and after this change.
+`openai/gpt-6-luna`: one run on 2026-11-23 through OpenRouter, judged by `openai/gpt-6.1-terra`; the one failure (`letter-header-footer`) left the recipient's name out of the letter. `openai/gpt-4.1-mini`: one run on 2026-11-17, judged by `openai/gpt-4.1`; its two failures (`add-link`, `totals-column`) passed on rerun. Each task runs once, so expect a task or so of difference between runs.
 
 ```bash
 uv run python -m evals run                          # default model; needs OPENROUTER_API_KEY
-uv run python -m evals run --model openai/gpt-4.1   # another model; repeat --model for several
+uv run python -m evals run --model anthropic/claude-haiku-5.5   # another model; repeat --model for several
 uv run python -m evals check                        # offline: prove every task with its reference solution
 ```
 

@@ -3,7 +3,7 @@
     uv run python -m evals list
     uv run python -m evals show fix-typos
     uv run python -m evals check
-    uv run python -m evals run --model openai/gpt-4.1-mini
+    uv run python -m evals run --model openai/gpt-6-luna
     uv run python -m evals report evals/results/<run> --markdown
 """
 
