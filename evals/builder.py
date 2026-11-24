@@ -143,6 +143,24 @@ def _footer(doc, value, options):
     doc.set_footer(str(value))
 
 
+@step("section_break")
+def _section_break(doc, value, options):
+    """A new section starts after the paragraph containing ``value``."""
+    doc.insert_section_break(block_with(doc, str(value)))
+
+
+@step("section_header")
+def _section_header(doc, value, options):
+    """``{section, text}``: that section's own header."""
+    doc.set_header(str(value["text"]), section=int(value["section"]))
+
+
+@step("footnote")
+def _footnote(doc, value, options):
+    """``{after, text}``: a footnote after existing text."""
+    doc.add_note(block_with(doc, value["after"]), value["text"], match=value["after"])
+
+
 @step("link")
 def _link(doc, value, options):
     """``{text, url}``: link existing text."""

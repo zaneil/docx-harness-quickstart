@@ -1,0 +1,15 @@
+instruction: >
+  Cite the source of the revenue figure in a footnote placed right after the
+  sentence "Revenue grew 12% in 2025." The footnote should read "2025 annual
+  report, page 4." Do not change the text of the document.
+input:
+  - heading: Results
+  - paragraph: Revenue grew 12% in 2025. Costs stayed flat.
+  - paragraph: The board expects similar growth next year.
+checks:
+  - note: {text: 2025 annual report, after: Revenue grew 12% in 2025.}
+  - text_absent: [annual report, "[1]"]
+  - unchanged_except: []
+  - block_count: 3
+solution:
+  - add_footnote: {block_id: b2, text: "2025 annual report, page 4.", after_text: Revenue grew 12% in 2025.}

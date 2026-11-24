@@ -58,7 +58,7 @@ def test_default_tools_have_valid_schemas(doc):
     read_only = {t.name for t in tools if t.read_only}
     assert read_only == {
         "get_outline", "read_blocks", "search_text", "list_styles", "list_revisions", "list_parts", "read_part_xml",
-        "read_headers_footnotes",
+        "read_headers_footnotes", "list_sections",
     }
 
 
@@ -371,3 +371,35 @@ def test_structural_results_show_the_neighbourhood(doc):
     assert result.splitlines() == [
         "Deleted 7 block(s). Now around the gap:", "  b1 [Normal] p1", "  b2 [Normal] p2", "  b3 [Normal] p3"]
     assert registry.execute("delete_blocks", {"block_ids": ["b1", "b2", "b3"]}) == "Deleted 3 block(s)."
+
+
+def test_section_and_footnote_tools(doc):
+    registry = ToolRegistry(default_tools(doc))
+    assert "list_sections" not in {t["function"]["name"] for t in registry.to_openai_schema()}  # one section
+    registry.execute("insert_paragraphs", {"paragraphs": [{"text": "Intro."}, {"text": "Appendix", "style": "Heading 1"}]})
+    registry.execute("set_header_footer", {"kind": "header", "text": "Report"})
+    result = registry.execute("insert_section_break", {"after": "b1"})
+    assert result.startswith("Inserted section break b3; section 2 starts after it.")
+    assert "list_sections" in {t["function"]["name"] for t in registry.to_openai_schema()}
+    assert registry.execute("set_header_footer", {"kind": "header", "text": "Appendix", "section": 2}).startswith(
+        "Set the header for section 2 (word/header2.xml).")
+    assert registry.execute("list_sections", {}).splitlines() == [
+        "Section 1: blocks b1..b3, starts new page",
+        "  header: default word/header1.xml",
+        "  footer: none",
+        "Section 2: blocks b2..b2, starts new page",
+        "  header: default word/header2.xml",
+        "  footer: none",
+    ]
+    assert "Error: Section 5 does not exist" in registry.execute(
+        "set_header_footer", {"kind": "footer", "text": "x", "section": 5})
+
+    assert registry.execute("add_footnote", {"block_id": "b1", "text": "Smith 2024.", "after_text": "Intro"}).startswith(
+        "Added footnote 1 in b1.")
+    listing = registry.execute("read_headers_footnotes", {})
+    assert "word/header1.xml (header, section 1):\n  Report" in listing
+    assert "word/footnotes.xml (footnotes):\n  [1] Smith 2024." in listing
+    assert json.loads(registry.execute("read_blocks", {"start": "b1", "count": 1}))["blocks"][0]["notes"] == [
+        {"kind": "footnote", "id": "1", "text": "Smith 2024."}]
+    assert registry.execute("delete_footnote", {"note_id": "1"}) == "Deleted footnote 1."
+    assert registry.execute("delete_footnote", {"note_id": "1"}).startswith("Error: No footnote with id '1'")

@@ -41,10 +41,11 @@ How to work:
 6. To add content at the end, pass after='end'; you do not need to read the last block first. Do not repeat a read you have already made.
 7. If a tool returns an error, read it, fix the call and continue.
 8. A document may hold tracked changes (redlines). You read it as it will be once they are accepted. Leave them as they are: use accept_revisions or reject_revisions only when the user asks you to, after list_revisions.
-9. The outline covers the body only. read_headers_footnotes shows the text of headers, footers and notes. Write or rewrite a header or footer with set_header_footer ({PAGE} and {NUMPAGES} give page numbers); change a few words of one with replace_text.
-10. Links: write [text](https://address) in the text of a new paragraph, or use add_hyperlink on existing text. Never paste a bare address where linked words would read better.
-11. Pictures: insert_image places an image file in a paragraph of its own; give it alt_text, and follow it with a 'Caption' paragraph when it needs one. Only use image files the user has named.
-12. Tables: set_table_format draws the lines of the whole table (all, none, outer, horizontal); format_table_cells shades cells and draws or removes lines on particular ones.
+9. The outline covers the body only. read_headers_footnotes shows the text of headers, footers and notes. Write or rewrite a header or footer with set_header_footer ({PAGE} and {NUMPAGES} give page numbers); change a few words of one with replace_text. For a header or footer on only part of the document, start a new section there with insert_section_break, then pass its number as section to set_header_footer (list_sections shows the sections).
+10. Citations and asides go in notes: add_footnote puts the number after the given text and the note at the foot of the page (kind='endnote' for the end of the document). Never type note numbers or a notes list yourself.
+11. Links: write [text](https://address) in the text of a new paragraph, or use add_hyperlink on existing text. Never paste a bare address where linked words would read better.
+12. Pictures: insert_image places an image file in a paragraph of its own; give it alt_text, and follow it with a 'Caption' paragraph when it needs one. Only use image files the user has named.
+13. Tables: set_table_format draws the lines of the whole table (all, none, outer, horizontal); format_table_cells shades cells and draws or removes lines on particular ones.
 
 You do not need to save; the document is saved for you. When you are finished, reply with a brief summary of what you did."""
 

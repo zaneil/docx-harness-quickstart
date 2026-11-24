@@ -69,6 +69,9 @@ uv run python -m evals run -k <id>   # try it on a real model
 | `table: [[a, b], [c, d]]` (options `header: false`, `merge: [[row, col, end_row, end_col]]`) | A table; quote numbers (`"42"`) |
 | `page_break: true` | A page break |
 | `header: text` / `footer: text` | The page header or footer; `{PAGE}` and `{NUMPAGES}` are fields |
+| `section_break: text` | A new section starts after the paragraph containing the text |
+| `section_header: {section, text}` | That section's own page header |
+| `footnote: {after, text}` | A footnote after text already in the document |
 | `link: {text, url}` | Links text already in the document |
 | `format: {text, bold: true, color: FF0000}` | Formats text already in the document |
 | `tracked: {author, steps}` | Pending revisions by another author. Steps: `replace: [old, new]`, `insert: text` (with `after: text of the paragraph above`), `delete: text of the paragraph` |
@@ -99,6 +102,8 @@ Text is compared with curly quotes, long dashes and runs of spaces normalised. W
 | `formatting: {text, bold: true, color: FF0000}` | Every occurrence of the text is formatted so. `only: true` also requires the rest of the paragraph not to be |
 | `link: {text, url}` | Exactly those words link to the address. `exact: false` accepts a longer link containing them |
 | `header_contains: a` / `footer_contains: a` | The header or footer has the text |
+| `note: {text, after}` | A footnote containing `text` has its mark in the paragraph containing `after`. `kind: endnote` for an endnote |
+| `section_header: {section, contains, absent, starts_with}` | Section `section` (from 1) shows a header with the `contains` strings and none of `absent`, and its first paragraph starts with `starts_with`. `footer: true` checks the footer |
 | `revisions: 0` | That many pending tracked changes. `{author, type, min, max}` counts some (type: insert, delete, format, move) |
 | `reject_all_restores_input: true` | Rejecting the tracked changes gives back the input, so every edit was recorded. `{author: name}` rejects only theirs |
 

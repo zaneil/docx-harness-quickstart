@@ -30,7 +30,7 @@ def read_tools(doc: WordDocument) -> list[Tool]:
 
     @tool(read_only=True)
     def read_blocks(start: Optional[str] = None, count: int = 20, include_formatting: bool = False) -> str:
-        """Read the full content of consecutive blocks. Paragraphs give text and style, plus 'list', 'links' and 'images' when present. Tables give rows on the column grid, plus 'merged' and 'nested' (ids of tables inside cells) when present.
+        """Read the full content of consecutive blocks. Paragraphs give text and style, plus 'list', 'links', 'images', 'notes' (footnotes and endnotes) and 'section_break' when present. Tables give rows on the column grid, plus 'merged' and 'nested' (ids of tables inside cells) when present.
 
         Args:
             start: Id of the first block, or of a nested table to read just that table. Omit to start at the top.
@@ -70,14 +70,37 @@ def read_tools(doc: WordDocument) -> list[Tool]:
 
     @tool(read_only=True)
     def read_headers_footnotes() -> str:
-        """Read the text of headers, footers, footnotes and endnotes, grouped by part name. Page numbers show as {PAGE} and {NUMPAGES}. A part name works as the block in replace_text and in blocks for format_text and set_paragraph_format; set_header_footer rewrites a header or footer."""
-        sections = []
+        """Read the text of headers, footers, footnotes and endnotes, grouped by part name. Page numbers show as {PAGE} and {NUMPAGES}; each note starts with its [id]. A part name works as the block in replace_text and in blocks for format_text and set_paragraph_format; set_header_footer rewrites a header or footer."""
+        parts = []
         for story in doc.stories():
-            lines = [f"  {text}" for text in story["paragraphs"] if text.strip()]
+            if "notes" in story:
+                lines = [f"  [{note['id']}] {note['text']}" for note in story["notes"]]
+            else:
+                lines = [f"  {text}" for text in story["paragraphs"] if text.strip()]
             pages = {"first": ", first page only", "even": ", even pages"}.get(story.get("page"), "")
-            sections.append(f"{story['part']} ({story['kind']}{pages}):\n" + ("\n".join(lines) or "  (empty)"))
-        return "\n".join(sections) or (
-            "The document has no headers, footers, footnotes or endnotes. Create a header or footer with set_header_footer."
+            if story.get("sections"):
+                numbers = story["sections"]
+                pages += f", section{'s' * (len(numbers) > 1)} {', '.join(map(str, numbers))}"
+            parts.append(f"{story['part']} ({story['kind']}{pages}):\n" + ("\n".join(lines) or "  (empty)"))
+        return "\n".join(parts) or (
+            "The document has no headers, footers, footnotes or endnotes. Create a header or footer with "
+            "set_header_footer, a note with add_footnote."
         )
 
-    return [get_outline, read_blocks, search_text, list_styles, read_headers_footnotes]
+    @tool(read_only=True, available=lambda: doc.section_count() > 1)
+    def list_sections() -> str:
+        """List the document's sections: the blocks each covers, how it starts, and which header and footer parts it shows ('from section N' when it shows an earlier section's). Pass a section number to set_header_footer to change only that section."""
+        lines = []
+        for s in doc.sections():
+            span = f"{s['start']}..{s['end']}" if s["start"] else "(empty)"
+            first = ", different first page" if s["first_page_different"] else ""
+            lines.append(f"Section {s['section']}: blocks {span}, starts {s['start_type'].replace('_', ' ')}{first}")
+            for kind in ("header", "footer"):
+                shown = [
+                    f"{page} {info['part']}" + (f" (from section {info['from_section']})" if "from_section" in info else "")
+                    for page, info in s[kind].items()
+                ]
+                lines.append(f"  {kind}: {'; '.join(shown) or 'none'}")
+        return "\n".join(lines)
+
+    return [get_outline, read_blocks, search_text, list_styles, read_headers_footnotes, list_sections]

@@ -137,3 +137,21 @@ def test_relate_creates_the_rels_part_of_a_new_xml_part():
     assert "word/_rels/header1.xml.rels" in again.list_parts()
     assert again.relationships(header)[0]["external"]
     assert 'PartName="/word/header1.xml"' in again.read_xml("[Content_Types].xml")
+
+
+def test_duplicate_part_copies_content_type_and_relationships():
+    package = WordPackage.open()
+    doc = WordDocument(package)
+    doc.insert_paragraph("Body")
+    header = doc.set_header("Title")
+    doc.add_hyperlink(header, "https://example.com")
+    copy = package.duplicate_part(header)
+    assert copy == "word/header2.xml"
+    assert package.content_type(copy) == package.content_type(header)
+    assert package.content_type(header).endswith("wordprocessingml.header+xml")
+    assert package.relationships(copy) == package.relationships(header) != []
+    assert package.read_xml(copy) == package.read_xml(header)
+    reopened = WordPackage.from_bytes(package.to_bytes())
+    assert reopened.content_type(copy) == package.content_type(header)
+    with pytest.raises(PackageError, match="No part named"):
+        package.duplicate_part("word/missing.xml")

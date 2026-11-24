@@ -95,6 +95,9 @@ DOC = [
     {"numbered": ["First"]},
     {"table": [["Name", "Qty"], ["Bolts", "4"]]},
     {"paragraph": "Old clause."},
+    {"footnote": {"after": "March 3", "text": "Pending sign-off."}},
+    {"section_break": "review the handbook"},
+    {"section_header": {"section": 2, "text": "Acme appendix"}},
     {"tracked": {"author": "Alice", "steps": [{"replace": ["March 3", "March 9"]}, {"delete": "Old clause."}]}},
 ]
 
@@ -125,6 +128,9 @@ CASES = {
              {"text": "handbook", "url": "https://example.com/handbook"}),
     "header_contains": ("Acme internal", "Zenith"),
     "footer_contains": (["{PAGE}", "{NUMPAGES}"], "Confidential"),
+    "note": ({"text": "sign-off", "after": "review the handbook"}, {"text": "sign-off", "kind": "endnote"}),
+    "section_header": ({"section": 2, "contains": "Acme appendix", "starts_with": "Details"},
+                       {"section": 1, "absent": "Acme internal"}),
     "revisions": ({"author": "Alice", "type": "delete", "min": 2}, 0),
     "reject_all_restores_input": ({"author": "Alice"}, None),
 }

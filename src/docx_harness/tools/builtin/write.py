@@ -104,6 +104,23 @@ def write_tools(doc: WordDocument, image_root: str | os.PathLike | None = None) 
         return with_context(f"Inserted page break {block_id}.", doc, [block_id])
 
     @tool
+    def insert_section_break(after: str, start: Literal["new_page", "continuous", "even_page", "odd_page"] = "new_page") -> str:
+        """Start a new section after a block, so that part of the document can have its own header or footer (set_header_footer with section). Both sections keep the current headers and footers until changed.
+
+        Args:
+            after: Id of the last block of the current section; the new section starts after it.
+            start: Where the new section begins: on a new page, on the same page (continuous), or on the next even or odd page.
+        """
+        before = set(doc.block_ids())
+        number = doc.insert_section_break(after, start)
+        added = [b for b in doc.block_ids() if b not in before]
+        return with_context(
+            f"Inserted section break {added[0]}; section {number} starts after it. "
+            f"To give it its own header, call set_header_footer with section={number}.",
+            doc, added,
+        )
+
+    @tool
     def insert_image(
         path: str,
         after: str = "end",
@@ -147,17 +164,47 @@ def write_tools(doc: WordDocument, image_root: str | os.PathLike | None = None) 
         text: str,
         page: Literal["default", "first", "even"] = "default",
         alignment: Optional[Literal["left", "center", "right"]] = None,
+        section: Optional[int] = None,
     ) -> str:
         """Set the text of the page header or footer, creating it if needed. Replaces what was there.
 
         Args:
             kind: Header (top of the page) or footer (bottom).
             text: Each line is a paragraph. {PAGE} is the page number and {NUMPAGES} the page count. A tab moves to the centre, a second to the right edge. Empty for a blank one.
-            page: 'default' for all pages, 'first' for a different first page (e.g. blank on a cover), 'even' for even pages.
+            page: 'default' for all pages, 'first' for a different first page (e.g. blank on a cover), 'even' for even pages (even pages apply to the whole document).
             alignment: Alignment of the text.
+            section: Section number (from 1, see list_sections) to change only that section. Omit to set it for the whole document.
         """
-        part = doc.set_header(text, page, alignment) if kind == "header" else doc.set_footer(text, page, alignment)
-        return f"Set the {kind} ({part}). To restyle it, pass '{part}' in blocks to format_text or set_paragraph_format."
+        setter = doc.set_header if kind == "header" else doc.set_footer
+        part = setter(text, page, alignment, section)
+        where = f" for section {section}" if section is not None else ""
+        return f"Set the {kind}{where} ({part}). To restyle it, pass '{part}' in blocks to format_text or set_paragraph_format."
+
+    @tool
+    def add_footnote(block_id: str, text: str, after_text: Optional[str] = None,
+                     kind: Literal["footnote", "endnote"] = "footnote") -> str:
+        """Add a footnote (or endnote) to a paragraph. Its number is placed at the end of the paragraph, or right after after_text. Use this for citations and asides instead of writing them into the text.
+
+        Args:
+            block_id: Id of the paragraph (or a table cell like 'b3[0,1]').
+            text: The note's text, without a number; Word numbers notes itself.
+            after_text: Exact text in the paragraph that the number should follow, e.g. the end of a sentence. Omit for the end of the paragraph.
+            kind: 'footnote' (bottom of the page) or 'endnote' (end of the document).
+        """
+        note_id = doc.add_note(block_id, text, after_text, kind)
+        return (f"Added {kind} {note_id} in {block_id}. Change its text with replace_text on the notes part "
+                f"(read_headers_footnotes), or remove it with delete_footnote.")
+
+    @tool
+    def delete_footnote(note_id: str, kind: Literal["footnote", "endnote"] = "footnote") -> str:
+        """Delete a footnote or endnote: its number in the text and the note itself.
+
+        Args:
+            note_id: The note's id, as shown in read_blocks ('notes') or read_headers_footnotes.
+            kind: 'footnote' or 'endnote'.
+        """
+        doc.delete_note(note_id, kind)
+        return f"Deleted {kind} {note_id}."
 
     # ----------------------------------------------------------------- update
 
@@ -260,6 +307,6 @@ def write_tools(doc: WordDocument, image_root: str | os.PathLike | None = None) 
         return f"{summary} {context}" if context else summary
 
     return [
-        insert_paragraphs, insert_table, insert_page_break, insert_image, set_image, set_header_footer,
-        update_paragraph, replace_text, add_hyperlink, remove_hyperlink, move_blocks, delete_blocks,
+        insert_paragraphs, insert_table, insert_page_break, insert_section_break, insert_image, set_image,
+        set_header_footer, add_footnote, delete_footnote, update_paragraph, replace_text, add_hyperlink, remove_hyperlink, move_blocks, delete_blocks,
     ]

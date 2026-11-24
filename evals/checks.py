@@ -456,6 +456,53 @@ def footer_contains(ctx, argument):
     return _story(ctx, "footer", argument)
 
 
+@check("note")
+def note(ctx, argument):
+    """A footnote (or ``kind: endnote``) whose text contains ``text`` has its
+    mark in the paragraph containing ``after``, if given."""
+    options = _options(argument, "text")
+    kind = options.get("kind", "footnote")
+    found = [(p, n) for p in ctx.paragraphs for n in p.get("notes", []) if n["kind"] == kind]
+    for paragraph, item in found:
+        if fold(options["text"]) in fold(item["text"]) and (
+                "after" not in options or fold(options["after"]) in fold(paragraph["text"])):
+            return None
+    where = f" in the paragraph with {options['after']!r}" if "after" in options else ""
+    return f"no {kind} containing {options['text']!r}{where}; {kind}s are {[(p['text'], n['text']) for p, n in found]}"
+
+
+@check("section_header")
+def section_header(ctx, argument):
+    """Section ``section`` (from 1) shows a header with every string in
+    ``contains`` and none in ``absent``; ``starts_with`` is the text of its
+    first non-empty paragraph; ``footer: true`` checks the footer instead."""
+    kind = "footer" if argument.get("footer") else "header"
+    sections = ctx.out.sections()
+    number = int(argument["section"])
+    if not 1 <= number <= len(sections):
+        return f"there is no section {number}; the document has {len(sections)}"
+    section = sections[number - 1]
+    shown = section[kind].get("default")
+    text = ""
+    if shown:
+        text = "\n".join(next(s["paragraphs"] for s in ctx.out.stories() if s["part"] == shown["part"]))
+    problems = []
+    missing = _missing(_strings(argument.get("contains", [])), text, True)
+    if missing:
+        problems.append(f"missing {missing}")
+    present = [a for a in _strings(argument.get("absent", [])) if norm(a) in norm(text)]
+    if present:
+        problems.append(f"should not have {present}")
+    if "starts_with" in argument:
+        ids = ctx.out.block_ids()
+        span = ids[ids.index(section["start"]):ids.index(section["end"]) + 1] if section["start"] else []
+        first = next((b["text"] for b in ctx.out.read(span[0], len(span))["blocks"]
+                      if b["type"] == "paragraph" and b["text"].strip()), "") if span else ""
+        if not fold(first).startswith(fold(argument["starts_with"])):
+            problems.append(f"starts with {first!r}, not {argument['starts_with']!r}")
+    return f"section {number} {kind} ({text!r}): {'; '.join(problems)}" if problems else None
+
+
 # --------------------------------------------------------------- redlines
 
 @check("revisions")

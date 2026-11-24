@@ -122,6 +122,19 @@ EXTRA = [
     BuiltinStyle("Hyperlink", "Hyperlink", "character", """<w:basedOn w:val="DefaultParagraphFont"/><w:uiPriority w:val="99"/><w:unhideWhenUsed/>
 <w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr>
 """),
+    *(
+        style
+        for kind, word in (("Footnote", "footnote"), ("Endnote", "endnote"))
+        for style in (
+            BuiltinStyle(f"{kind}Text", f"{word} text", "paragraph", """<w:basedOn w:val="Normal"/><w:uiPriority w:val="99"/><w:semiHidden/><w:unhideWhenUsed/>
+<w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>
+<w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr>
+"""),
+            BuiltinStyle(f"{kind}Reference", f"{word} reference", "character", """<w:basedOn w:val="DefaultParagraphFont"/><w:uiPriority w:val="99"/><w:semiHidden/><w:unhideWhenUsed/>
+<w:rPr><w:vertAlign w:val="superscript"/></w:rPr>
+"""),
+        )
+    ),
 ]
 
 ALL = BASE + TEMPLATE + EXTRA

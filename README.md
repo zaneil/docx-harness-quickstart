@@ -18,7 +18,7 @@ Use `docx-harness-quickstart` to **build a Python AI agent that creates or edits
 | Direct Python document editing without an LLM or API key | [Create and edit a DOCX without an LLM](docs/use-cases.md#create-and-edit-a-docx-without-an-llm) |
 | A review step before an agent changes a document | [Plan and approve document edits](docs/use-cases.md#plan-and-approve-document-edits) |
 
-The built-in semantic tools handle body paragraphs, tables, formatting, lists, links, pictures, headers and footers, and can record edits as tracked changes. PDF rendering, page-layout inspection, comments, and legacy `.doc` files are outside the current scope. See [scope and limitations](#scope-and-limitations) before choosing it for a task.
+The built-in semantic tools handle body paragraphs, tables, formatting, lists, links, pictures, headers and footers (per section), footnotes and endnotes, and can record edits as tracked changes. PDF rendering, page-layout inspection, comments, and legacy `.doc` files are outside the current scope. See [scope and limitations](#scope-and-limitations) before choosing it for a task.
 
 ## For coding agents
 
@@ -171,12 +171,15 @@ doc.insert_paragraph("Figure 1: revenue by region", "Caption", after=figure)
 doc.set_header("Q3 Report\tConfidential")                 # a tab moves to the centre, then the right edge
 doc.set_footer("Page {PAGE} of {NUMPAGES}", alignment="center")
 doc.set_header("", page="first")                          # a blank header on the first page
+section = doc.insert_section_break(figure)                # returns 2: the next section starts after the figure
+doc.set_header("Appendix", section=section)               # only that section; doc.sections() lists them
+doc.add_note(intro, "Source: annual report, p. 4.", match="year over year")  # kind="endnote" for an endnote
 
 doc.set_table_format(table, borders="horizontal", cell_margins_in=0.05)
 doc.format_cells(f"{table}[0,*]", border="thick", border_sides=["bottom"])
 ```
 
-Reading a paragraph reports its `list` (kind and level), `links` and `images` when it has any.
+Reading a paragraph reports its `list` (kind and level), `links`, `images` and `notes` when it has any, and `section_break` when it ends a section.
 
 Tables are read and addressed on their column grid, so files with merged cells behave: `[row,col]` means the same column in every row, a merged cell answers to every position it covers, and reading a table lists its `merged` cells. A newline in cell text is a paragraph break, and rewriting a cell keeps its paragraphs' formatting. A table nested inside a cell gets its own block id (listed under `nested` when you read the outer table) and is edited like any other table. The raw package is always reachable: `doc.list_parts()`, `doc.read_part_xml("word/styles.xml")`, `doc.write_part_xml(...)`.
 
@@ -186,8 +189,8 @@ Tables are read and addressed on their column grid, so files with merged cells b
 
 | Kind | Tools |
 | --- | --- |
-| Read | `get_outline`, `read_blocks`, `search_text`, `list_styles`, `read_headers_footnotes`, `list_revisions` |
-| Write | `insert_paragraphs`, `insert_table`, `insert_page_break`, `insert_image`, `insert_table_row`, `insert_table_column`, `set_header_footer` |
+| Read | `get_outline`, `read_blocks`, `search_text`, `list_styles`, `read_headers_footnotes`, `list_sections`, `list_revisions` |
+| Write | `insert_paragraphs`, `insert_table`, `insert_page_break`, `insert_section_break`, `insert_image`, `insert_table_row`, `insert_table_column`, `set_header_footer`, `add_footnote`, `delete_footnote` |
 | Update | `update_paragraph`, `replace_text`, `add_hyperlink`, `remove_hyperlink`, `set_image`, `set_table_cell`, `merge_table_cells`, `unmerge_table_cells`, `move_blocks` |
 | Delete | `delete_blocks`, `delete_table_row`, `delete_table_column` |
 | Style | `set_paragraph_style`, `create_style`, `set_list_format`, `format_text`, `set_paragraph_format`, `format_table_cells`, `set_table_format` |
@@ -280,7 +283,7 @@ doc.accept_revisions()                            # no arguments: everything tha
 ```
 
 - Text, paragraphs, tables, table rows and table columns are tracked as insertions and deletions; character formatting, paragraph formatting, style changes, list levels and numbering restarts, and table formatting (cell shading, borders, padding and alignment, widths, header rows) are tracked as formatting changes.
-- An inserted picture is a tracked insertion. Linking text is recorded as that text replaced by its linked copy, so rejecting it gives the plain text back. Rewriting an existing header or footer is tracked.
+- An inserted picture is a tracked insertion. Linking text is recorded as that text replaced by its linked copy, so rejecting it gives the plain text back. Rewriting an existing header or footer is tracked. A new footnote or endnote is a tracked insertion (its mark and its text), and so is a section break (rejecting it joins the two sections again).
 - An inserted or deleted column is recorded cell by cell (`w:cellIns` / `w:cellDel`). Merging and unmerging cells cannot be recorded and are refused while tracking is on.
 - The agent (and `doc.text()`, the outline and block ids) always sees the document as it would read with all changes accepted.
 - Revisions already in the file from other authors are preserved. Undoing something inserted in the same session removes it rather than recording a deletion.
@@ -290,18 +293,18 @@ doc.accept_revisions()                            # no arguments: everything tha
 - A moved paragraph is recorded as a move. Word has no move markup for tables, so a moved table is a deletion plus an insertion.
 - `accept_revisions` and `reject_revisions` resolve insertions, deletions, moves and formatting changes from any author. The agent is told not to use them unless asked. The demo UI has Accept all and Reject all buttons.
 
-Not recorded, although they take effect: new style definitions, a header or footer part the document did not have, re-pointing an existing link, and resizing a picture or changing its alt text.
+Not recorded, although they take effect: new style definitions, a header or footer part the document did not have (or a section's own copy of a shared one), section properties, re-pointing an existing link, and resizing a picture or changing its alt text.
 
 Not covered: edits made through `write_part_xml`; accepting or rejecting tracked cell merges (`w:cellMerge`), section and table-grid changes and numbering changes, which are left in place (so rejecting a tracked column-width change restores the cell widths but not the `w:tblGrid` values); and pending revisions inside a paragraph you move (your own earlier edits included), which read as plain text in the moved copy. They are kept in the half left behind and come back if the move is rejected.
 
 ## Scope and limitations
 
-- Editable through the semantic tools: body paragraphs and tables, paragraph styles, character and paragraph formatting, lists, hyperlinks, inline pictures, headers and footers.
+- Editable through the semantic tools: body paragraphs and tables, paragraph styles, character and paragraph formatting, lists, hyperlinks, inline pictures, headers and footers, section breaks, footnotes and endnotes.
 - Tables: rows, columns, merged cells, nested tables, column widths, cell shading, borders, padding, text direction and vertical alignment, repeating header rows. The legacy `w:hMerge` merge markup is read as a merged cell and rewritten as `w:gridSpan` the first time the table's structure is edited; a cell merged both ways in the legacy markup reads row by row.
 - Lists: bullet and numbered, nine levels, restarts. The look of a list (number format, bullet character, indents) comes from the document's definitions and is not editable.
 - Hyperlinks: to web and mail addresses. Links to bookmarks inside the document are read (as `#name`) but not created.
 - Pictures: PNG, JPEG and GIF, inline in a paragraph of their own in the body. No floating or wrapped pictures, cropping, or pictures in table cells, headers or footers; pictures already in a file are reported, resized and deleted, not replaced. A deleted picture's file stays in the package.
-- Headers and footers: text, page-number fields, alignment and formatting, for all pages, the first page or even pages. One set for the whole document: sections with different headers each keep their own part, and a new header is attached to the first section. Footnotes and endnotes: their text can be read, searched and replaced, not created.
+- Headers and footers: text, page-number fields, alignment and formatting, for all pages, the first page or even pages (even pages are a setting for the whole document). Without a section number they apply to the whole document; with one, only that section changes: a header it shares is copied first, and the section after it keeps what it showed. Section breaks can be inserted (new page, continuous, even or odd page); page size, margins and columns per section are not editable. Footnotes and endnotes: added after given text or at the end of a paragraph, deleted, and their text read, searched and replaced; note numbering format and placement settings are not editable.
 - Preserved on round trip but not editable through the semantic tools: comments, content controls. They can be reached through the raw part tools.
 - Output has been checked with python-docx and macOS `textutil`, not yet in Word itself. The tracked move and column markup, pictures, cell borders and header fields are the parts most likely to need adjusting.
 - There is no layout engine: the agent cannot know page counts or where lines break.
