@@ -34,6 +34,7 @@ from .common import (
 from .edits import EditContext
 from .lists import ListsMixin
 from .media import MediaMixin
+from .notes import NotesMixin
 from .ooxml import (
     BODY,
     BR,
@@ -64,7 +65,7 @@ from .ooxml import (
 )
 from .package import WordPackage
 from .revisions import RevisionsMixin
-from .stories import StoriesMixin
+from .stories import StoriesMixin, _ends_section
 from .table_ops import TablesMixin
 
 _TOKEN = re.compile(r"\s+|\w+|[^\w\s]")
@@ -72,7 +73,7 @@ _REF = re.compile(r"^(b\d+)(?:\[\s*(\d+|\*)\s*,\s*(\d+|\*)\s*\])?$")
 _TEXT_CHILDREN = (RPR, T, TAB, BR, CR)
 
 
-class WordDocument(StoriesMixin, ListsMixin, TablesMixin, MediaMixin, RevisionsMixin):
+class WordDocument(StoriesMixin, NotesMixin, ListsMixin, TablesMixin, MediaMixin, RevisionsMixin):
     """``track_changes=True`` records every edit as a Word revision by
     ``author`` (a redline the reader can accept or reject) instead of changing
     the text directly."""
@@ -356,6 +357,13 @@ class WordDocument(StoriesMixin, ListsMixin, TablesMixin, MediaMixin, RevisionsM
             pictures = self._images(element)
             if pictures:
                 info["images"] = pictures
+            notes = self._note_references(element)
+            if notes:
+                info["notes"] = notes
+            if _ends_section(element) and element.getparent() is self._body:
+                ended = 1 + sum(1 for sibling in element.itersiblings(preceding=True)
+                                if _ends_section(sibling) and not is_deleted_block(sibling))
+                info["section_break"] = {"ends_section": ended}
             if include_formatting:
                 layout = styling.paragraph_format(element)
                 if layout:
@@ -398,6 +406,10 @@ class WordDocument(StoriesMixin, ListsMixin, TablesMixin, MediaMixin, RevisionsM
                 entry = {"id": info["id"], "type": info["type"], "preview": info["text"]}
                 for picture in info.get("images", []):
                     entry["preview"] = f"{entry['preview']} [image: {picture['alt'] or picture['name']}]".strip()
+                for note in info.get("notes", []):
+                    entry["preview"] = f"{entry['preview']} [{note['kind']} {note['id']}]"
+                if "section_break" in info:
+                    entry["preview"] = f"{entry['preview']} [end of section {info['section_break']['ends_section']}]".strip()
                 for key in ("style", "list"):
                     if key in info:
                         entry[key] = info[key]
@@ -421,7 +433,9 @@ class WordDocument(StoriesMixin, ListsMixin, TablesMixin, MediaMixin, RevisionsM
         numbered list item shows, for rendering a preview.
 
         A paragraph also returns ``list`` (kind and nesting level) when it is
-        a list item, ``links`` and ``images`` when it has any.
+        a list item, ``links``, ``images`` and ``notes`` (footnote and endnote
+        marks with the note text) when it has any, and ``section_break``
+        when it ends a section.
 
         A table returns ``rows`` (its text on the column grid), ``merged``
         (cells covering more than one position) and ``nested`` (ids of tables

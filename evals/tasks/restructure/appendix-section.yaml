@@ -1,0 +1,19 @@
+instruction: >
+  Start the Appendix on a new page, in a section of its own whose page header
+  reads "Acme annual report: Appendix". The pages before it keep their
+  current header.
+input:
+  - header: Acme annual report
+  - title: Annual report
+  - heading: Summary
+  - paragraph: Sales rose in every region and costs stayed flat.
+  - heading: Appendix
+  - paragraph: Raw figures by region and quarter.
+checks:
+  - section_header: {section: 1, contains: Acme annual report, absent: Appendix}
+  - section_header: {section: 2, contains: "Acme annual report: Appendix", starts_with: Appendix}
+  - unchanged_except: []
+  - block_count: 5
+solution:
+  - insert_section_break: {after: b3}
+  - set_header_footer: {kind: header, text: "Acme annual report: Appendix", section: 2}

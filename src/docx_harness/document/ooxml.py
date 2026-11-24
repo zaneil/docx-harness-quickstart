@@ -132,6 +132,17 @@ SETTINGS_BEFORE_EVEN_AND_ODD = SETTINGS_BEFORE_TRACK_REVISIONS + [
     "w:autoHyphenation", "w:consecutiveHyphenLimit", "w:hyphenationZone", "w:doNotHyphenateCaps",
     "w:showEnvelope", "w:summaryLength", "w:clickAndTypeStyle", "w:defaultTableStyle",
 ]
+# ...and those that come before w:footnotePr (w:endnotePr follows it).
+SETTINGS_BEFORE_FOOTNOTE_PR = SETTINGS_BEFORE_EVEN_AND_ODD + [
+    "w:evenAndOddHeaders", "w:bookFoldRevPrinting", "w:bookFoldPrinting", "w:bookFoldPrintingSheets",
+    "w:drawingGridHorizontalSpacing", "w:drawingGridVerticalSpacing", "w:displayHorizontalDrawingGridEvery",
+    "w:displayVerticalDrawingGridEvery", "w:doNotUseMarginsForDrawingGridOrigin", "w:drawingGridHorizontalOrigin",
+    "w:drawingGridVerticalOrigin", "w:doNotShadeFormData", "w:noPunctuationKerning", "w:characterSpacingControl",
+    "w:printTwoOnOne", "w:strictFirstAndLastChars", "w:noLineBreaksAfter", "w:noLineBreaksBefore",
+    "w:savePreviewPicture", "w:doNotValidateAgainstSchema", "w:saveInvalidXml", "w:ignoreMixedContent",
+    "w:alwaysShowPlaceholderText", "w:doNotDemarcateInvalidXml", "w:saveXmlDataOnly", "w:useXSLTWhenSaving",
+    "w:saveThroughXslt", "w:showXMLTags", "w:alwaysMergeEmptyNamespace", "w:updateFields", "w:hdrShapeDefaults",
+]
 # Children of w:sectPr in schema order (the header and footer references come first).
 SECTPR_ORDER = [
     "w:headerReference", "w:footerReference", "w:footnotePr", "w:endnotePr", "w:type", "w:pgSz",

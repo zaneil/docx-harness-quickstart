@@ -17,7 +17,9 @@ _NUMBER = re.compile(r"^\s*\d+[.)]\s+")
 _LONE_BULLET = re.compile(r"^\s*[-*•]\s+(?=\D)")
 _MD_LINK = re.compile(r"\[([^\[\]]+)\]\(((?:https?://|mailto:)[^\s()]+)\)")
 #: Well-known styles the document layer adds to a file the first time they are used.
-CREATABLE_STYLES = sorted({style.name.lower() for style in BUILTIN_STYLES if style.type == "paragraph"})
+# Note text styles are applied by add_footnote, so they are not offered.
+CREATABLE_STYLES = sorted({style.name.lower() for style in BUILTIN_STYLES
+                           if style.type == "paragraph" and not style.name.endswith("note text")})
 
 
 def as_list(value) -> list:

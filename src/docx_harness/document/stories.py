@@ -21,6 +21,7 @@ from .common import (
 )
 from .ooxml import (
     FLD_SIMPLE,
+    PPR,
     R_ID,
     SECTPR,
     SECTPR_ORDER,
@@ -33,6 +34,7 @@ from .ooxml import (
     iter_runs,
     make_paragraph,
     make_run,
+    P,
     qn,
     run_text,
 )
@@ -49,6 +51,24 @@ _HEADER_FOOTER_TYPES = {
     "footer": "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml",
 }
 _SETTINGS_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
+# Section start types: our names -> w:type values.
+_START_TYPES = {"new_page": "nextPage", "continuous": "continuous", "even_page": "evenPage", "odd_page": "oddPage"}
+_START_NAMES = {**{v: k for k, v in _START_TYPES.items()}, "nextColumn": "next_column"}
+
+
+def _ends_section(block: etree._Element) -> bool:
+    """True for a body paragraph that carries a section break."""
+    ppr = block.find(PPR) if block.tag == P else None
+    return ppr is not None and ppr.find(SECTPR) is not None
+
+
+def _section_type(sect: etree._Element) -> str:
+    kind = sect.find(qn("w:type"))
+    return (kind.get(_VAL) if kind is not None else None) or "nextPage"
+
+
+def _flag_on(element: etree._Element | None) -> bool:
+    return element is not None and element.get(_VAL, "true").lower() not in ("0", "false", "off")
 
 
 class StoriesMixin:
@@ -89,12 +109,24 @@ class StoriesMixin:
                 relationship = self.package.relationship(self.package.main_document_part, reference.get(R_ID, ""))
                 if relationship:
                     pages.setdefault(relationship["target"], reference.get(qn("w:type"), "default"))
+        shown_in: dict[str, list[int]] = {}
+        if self.section_count() > 1:
+            for section in self.sections():
+                for kind in ("header", "footer"):
+                    for shown in section[kind].values():
+                        numbers = shown_in.setdefault(shown["part"], [])
+                        if section["section"] not in numbers:
+                            numbers.append(section["section"])
         out = []
         for part, kind, root in self._story_roots():
             entry = {"part": part, "kind": kind,
                      "paragraphs": [self._text_with_fields(p) for p in self._story_paragraphs(kind, root)]}
             if part in pages:
                 entry["page"] = pages[part]
+            if part in shown_in:
+                entry["sections"] = shown_in[part]
+            if _STORY_KINDS[kind] is not None:
+                entry["notes"] = self._notes_in(root, kind)
             out.append(entry)
         return out
 
@@ -120,7 +152,118 @@ class StoriesMixin:
         body's own and is created when the file has none."""
         if self._body.find(SECTPR) is None:
             self._body.append(el("w:sectPr"))  # layout, not content
-        return [s for s in self._body.iter(SECTPR) if s.getparent().tag != qn("w:sectPrChange")]
+        return [self._body.find(SECTPR) if p is None else p.find(PPR).find(SECTPR) for p in self._break_paragraphs()]
+
+    def _break_paragraphs(self) -> list[etree._Element | None]:
+        """The paragraph that ends each section, in order; None for the last
+        section, which the body's own ``w:sectPr`` ends."""
+        return [p for p in self._block_elements() if _ends_section(p)] + [None]
+
+    def section_count(self) -> int:
+        """Number of sections in the document (changes nothing)."""
+        return len(self._break_paragraphs())
+
+    def _section_index(self, section: int) -> int:
+        count = self.section_count()
+        try:
+            number = int(section)
+        except (TypeError, ValueError):
+            number = 0
+        if not 1 <= number <= count:
+            raise DocumentError(
+                f"Section {section} does not exist; the document has {count} section{'s' * (count != 1)} "
+                "(numbered from 1; list_sections shows them)."
+            )
+        return number - 1
+
+    def _section_spans(self) -> list[list[etree._Element]]:
+        """The body blocks of each section, in order."""
+        spans: list[list[etree._Element]] = [[]]
+        for block in self._block_elements():
+            spans[-1].append(block)
+            if _ends_section(block):
+                spans.append([])
+        return spans
+
+    def _own_reference(self, sect: etree._Element, kind: str, page: str) -> tuple[etree._Element, str] | None:
+        """The section's own reference of this kind and page, and its part."""
+        for reference in sect.findall(qn(f"w:{kind}Reference")):
+            if reference.get(qn("w:type"), "default") != page:
+                continue
+            relationship = self.package.relationship(self.package.main_document_part, reference.get(R_ID, ""))
+            if relationship and relationship["target"] in self.package:
+                return reference, relationship["target"]
+        return None
+
+    def _effective_reference(self, sections: list[etree._Element], index: int, kind: str,
+                             page: str) -> tuple[int, str] | None:
+        """(index of the section that owns it, part) for the header or footer
+        section ``index`` shows on ``page``: its own, else the nearest earlier
+        section's, as Word links a section to the previous one."""
+        for j in range(index, -1, -1):
+            own = self._own_reference(sections[j], kind, page)
+            if own is not None:
+                return j, own[1]
+        return None
+
+    def sections(self) -> list[dict]:
+        """The sections of the document, numbered from 1. Each has ``start``
+        and ``end`` (its first and last block id), ``start_type`` (how it
+        begins: new_page, continuous, even_page, odd_page or next_column),
+        ``first_page_different``, and ``header`` / ``footer``: for each page
+        type in use ("default", "first", "even"), ``{"part": name}``, with
+        ``"from_section": N`` when the section shows section N's (linked to
+        previous, in Word's terms)."""
+        sections = self._sections()
+        out = []
+        for index, (sect, blocks) in enumerate(zip(sections, self._section_spans())):
+            entry: dict = {
+                "section": index + 1,
+                "start": self._id_of(blocks[0]) if blocks else None,
+                "end": self._id_of(blocks[-1]) if blocks else None,
+                "start_type": _START_NAMES.get(_section_type(sect), _section_type(sect)),
+                "first_page_different": _flag_on(sect.find(qn("w:titlePg"))),
+            }
+            for kind in ("header", "footer"):
+                shown = {}
+                for page in _PAGES:
+                    found = self._effective_reference(sections, index, kind, page)
+                    if found is not None:
+                        shown[page] = {"part": found[1]}
+                        if found[0] != index:
+                            shown[page]["from_section"] = found[0] + 1
+                entry[kind] = shown
+            out.append(entry)
+        return out
+
+    def insert_section_break(self, after: str, start: str = "new_page") -> int:
+        """Start a new section after block ``after``: an empty paragraph that
+        ends the section is inserted there. ``start`` is how the new section
+        begins: "new_page", "continuous", "even_page" or "odd_page". Both
+        halves keep the page setup, headers and footers the section had,
+        until :meth:`set_header` / :meth:`set_footer` is given a ``section``.
+        Returns the new section's number (counted from 1).
+
+        The paragraph is a tracked insertion when tracking is on; the section
+        properties themselves are not recorded as a revision."""
+        start = str(start).strip().lower().replace("-", "_").replace(" ", "_")
+        if start not in _START_TYPES:
+            raise DocumentError(f"Invalid start {start!r}. Use 'new_page', 'continuous', 'even_page' or 'odd_page'.")
+        block = self._body_block(after)
+        if _ends_section(block):
+            raise DocumentError(f"Block {after} already ends a section. Choose the block before or after it.")
+        sections = self._sections()
+        index = next(i for i, span in enumerate(self._section_spans()) if block in span)
+        sect = sections[index]
+        first_half = copy.deepcopy(sect)  # keeps the way the original section started
+        for change in first_half.findall(qn("w:sectPrChange")):
+            first_half.remove(change)
+        # The original w:sectPr now ends the second half, which starts at the break.
+        ensure_child(sect, "w:type", SECTPR_ORDER).set(_VAL, _START_TYPES[start])
+        p = el("w:p", None, el("w:pPr", None, first_half))
+        self.edits.insert_block(self._body, self._body.index(block) + 1, p)
+        self._id_of(p)
+        return index + 2
 
     def _references(self, kind: str) -> list[etree._Element]:
         return [ref for sect in self._sections() for ref in sect.findall(qn(f"w:{kind}Reference"))]
@@ -143,47 +286,90 @@ class StoriesMixin:
             paragraphs.append(p)
         return paragraphs
 
-    def _set_header_footer(self, kind: str, text: str, page: str, alignment: str | None) -> str:
+    def _rewrite_story(self, part: str, new: list[etree._Element]) -> None:
+        """Replace what a header or footer part says (a tracked change when tracking)."""
+        root = self.package.xml(part)
+        old = [child for child in root if child.tag in BLOCK_TAGS and not is_deleted_block(child)]
+        for offset, p in enumerate(new):
+            self.edits.insert_block(root, offset, p)
+        for block in old:
+            self.edits.delete_block(block)
+
+    def _new_header_footer_part(self, kind: str, paragraphs: list[etree._Element]) -> str:
+        tag = "w:hdr" if kind == "header" else "w:ftr"
+        part = self.package.add_part(
+            self.package.next_part_name(self._part_beside_main(kind), ".xml"),
+            f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<{tag} xmlns:w="{W_NS}"/>',
+            _HEADER_FOOTER_TYPES[kind],
+        )
+        root = self.package.xml(part)
+        with self.edits.untracked():  # a new part is not a revision of anything
+            for offset, p in enumerate(paragraphs or [make_paragraph("", self._style_id(kind.capitalize()))]):
+                self.edits.insert_block(root, offset, p)
+        return part
+
+    def _add_reference(self, sect: etree._Element, kind: str, page: str, part: str) -> None:
+        rel_id = self.package.relate(self.package.main_document_part, kind, part)
+        reference = el(f"w:{kind}Reference", {"w:type": page, "r:id": rel_id})
+        sect.insert(len([c for c in sect if c.tag in (qn("w:headerReference"), qn("w:footerReference"))]), reference)
+
+    def _reference_count(self, part: str) -> int:
+        main = self.package.main_document_part
+        return sum(
+            1 for kind in ("header", "footer") for reference in self._references(kind)
+            if (self.package.relationship(main, reference.get(R_ID, "")) or {}).get("target") == part
+        )
+
+    def _set_section_header_footer(self, kind: str, new: list[etree._Element], page: str, section: int) -> tuple[str, list]:
+        """Give one section its own header or footer, leaving the others as they look now."""
+        sections = self._sections()
+        index = self._section_index(section)
+        sect = sections[index]
+        own = self._own_reference(sect, kind, page)
+        if own is not None:
+            reference, part = own
+            if self._reference_count(part) > 1:
+                # Shared with another section: copy it first so only this one changes.
+                part = self.package.duplicate_part(part)
+                reference.set(R_ID, self.package.relate(self.package.main_document_part, kind, part))
+                self._bind()
+            self._rewrite_story(part, new)
+            return part, [sect]
+        # Linked to the previous section. The next section may be linked to
+        # this one: pin it to what it shows now (a blank part if nothing).
+        if index + 1 < len(sections) and self._own_reference(sections[index + 1], kind, page) is None:
+            shown = self._effective_reference(sections, index, kind, page)
+            self._add_reference(sections[index + 1], kind, page,
+                                shown[1] if shown else self._new_header_footer_part(kind, []))
+        part = self._new_header_footer_part(kind, new)
+        self._add_reference(sect, kind, page, part)
+        self._bind()
+        return part, [sect]
+
+    def _set_header_footer(self, kind: str, text: str, page: str, alignment: str | None,
+                           section: int | None = None) -> str:
         page = str(page).strip().lower()
         if page not in _PAGES:
             raise DocumentError(f"Invalid page {page!r}. Use 'default', 'first' (first page only) or 'even' (even pages).")
         new = self._header_footer_paragraphs(kind, str(text), alignment)
-        main = self.package.main_document_part
-        parts: list[str] = []
-        used: list[etree._Element] = []
-        for sect in self._sections():
-            for reference in sect.findall(qn(f"w:{kind}Reference")):
-                relationship = self.package.relationship(main, reference.get(R_ID, ""))
-                if reference.get(qn("w:type"), "default") == page and relationship and relationship["target"] in self.package:
-                    used.append(sect)
-                    if relationship["target"] not in parts:
-                        parts.append(relationship["target"])
-        if parts:
-            # Replace what the existing part says (a tracked change when tracking).
-            for index, part in enumerate(parts):
-                root = self.package.xml(part)
-                old = [child for child in root if child.tag in BLOCK_TAGS and not is_deleted_block(child)]
-                for offset, p in enumerate(new if index == 0 else [copy.deepcopy(p) for p in new]):
-                    self.edits.insert_block(root, offset, p)
-                for block in old:
-                    self.edits.delete_block(block)
+        if section is not None:
+            part, used = self._set_section_header_footer(kind, new, page, section)
+            parts = [part]
         else:
-            tag = "w:hdr" if kind == "header" else "w:ftr"
-            part = self.package.add_part(
-                self.package.next_part_name(self._part_beside_main(kind), ".xml"),
-                f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<{tag} xmlns:w="{W_NS}"/>',
-                _HEADER_FOOTER_TYPES[kind],
-            )
-            root = self.package.xml(part)
-            with self.edits.untracked():  # a new part is not a revision of anything
-                for offset, p in enumerate(new):
-                    self.edits.insert_block(root, offset, p)
-            rel_id = self.package.relate(main, kind, part)
-            first = self._sections()[0]
-            reference = el(f"w:{kind}Reference", {"w:type": page, "r:id": rel_id})
-            first.insert(len([c for c in first if c.tag in (qn("w:headerReference"), qn("w:footerReference"))]), reference)
-            parts, used = [part], [first]
-            self._bind()
+            parts, used = [], []
+            for sect in self._sections():
+                own = self._own_reference(sect, kind, page)
+                if own is not None:
+                    used.append(sect)
+                    if own[1] not in parts:
+                        parts.append(own[1])
+            for index, part in enumerate(parts):
+                self._rewrite_story(part, new if index == 0 else [copy.deepcopy(p) for p in new])
+            if not parts:
+                first = self._sections()[0]
+                parts, used = [self._new_header_footer_part(kind, new)], [first]
+                self._add_reference(first, kind, page, parts[0])
+                self._bind()
         if page == "first":
             for sect in used:
                 ensure_child(sect, "w:titlePg", SECTPR_ORDER).attrib.pop(_VAL, None)
@@ -205,19 +391,28 @@ class StoriesMixin:
             self.package.relate(self.package.main_document_part, "settings", name)
         return self.package.xml(self.package.settings_part)
 
-    def set_header(self, text: str, page: str = "default", alignment: str | None = None) -> str:
+    def set_header(self, text: str, page: str = "default", alignment: str | None = None,
+                   section: int | None = None) -> str:
         """Set the text of the page header, creating it when the document has
         none. Each line of ``text`` is a paragraph; ``{PAGE}`` and
         ``{NUMPAGES}`` become the page number and page count, and a tab
         (``\\t``) moves to the centre, then to the right edge. ``page`` is
         which pages show it: "default" (all, unless the others are set),
-        "first" or "even". Returns the part name, which works as ``ref`` in
-        ``replace_text``, ``format_text`` and ``set_paragraph_format``.
+        "first" or "even" (even pages, a setting for the whole document).
+        Returns the part name, which works as ``ref`` in ``replace_text``,
+        ``format_text`` and ``set_paragraph_format``.
+
+        Without ``section`` this sets the header every section shows. With
+        a section number (from 1, see :meth:`sections`) only that section
+        changes: a header it shares with other sections is copied first, and
+        when it showed the previous section's, the next section keeps what it
+        showed.
 
         Replacing an existing header's text is tracked when tracking is on;
         creating the header is not."""
-        return self._set_header_footer("header", text, page, alignment)
+        return self._set_header_footer("header", text, page, alignment, section)
 
-    def set_footer(self, text: str, page: str = "default", alignment: str | None = None) -> str:
+    def set_footer(self, text: str, page: str = "default", alignment: str | None = None,
+                   section: int | None = None) -> str:
         """Set the text of the page footer; see :meth:`set_header`."""
-        return self._set_header_footer("footer", text, page, alignment)
+        return self._set_header_footer("footer", text, page, alignment, section)

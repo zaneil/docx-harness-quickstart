@@ -284,6 +284,37 @@ class WordPackage:
         self._parts[name] = data
         return name
 
+    def content_type(self, name: str) -> str | None:
+        """The content type registered for part ``name``: its ``Override``,
+        else the ``Default`` for its extension."""
+        types = self.xml(CONTENT_TYPES)
+        for entry in types.iter(f"{{{CONTENT_TYPES_NS}}}Override"):
+            if entry.get("PartName", "").lstrip("/") == name:
+                return entry.get("ContentType")
+        extension = posixpath.splitext(name)[1].lstrip(".").lower()
+        for entry in types.iter(f"{{{CONTENT_TYPES_NS}}}Default"):
+            if entry.get("Extension", "").lower() == extension:
+                return entry.get("ContentType")
+        return None
+
+    def duplicate_part(self, name: str) -> str:
+        """Copy part ``name`` (its current content, content type and
+        relationships) to a new part in the same folder, numbered like
+        ``word/header3.xml``, and return the new name. Relationship ids and
+        their relative targets stay valid because the copy sits beside the
+        original. Nothing points at the copy yet; :meth:`relate` it."""
+        self._require(name)
+        content_type = self.content_type(name)
+        if content_type is None:
+            raise PackageError(f"{name!r} has no content type")
+        stem, suffix = posixpath.splitext(name)
+        copy_name = self.next_part_name(stem.rstrip("0123456789"), suffix)
+        self.add_part(copy_name, self.part_bytes(name), content_type)
+        rels = self.rels_name(name)
+        if rels in self._parts:
+            self.add_part(self.rels_name(copy_name), self.part_bytes(rels), RELS_CONTENT_TYPE)
+        return copy_name
+
     def list_parts(self) -> list[str]:
         return list(self._parts)
 

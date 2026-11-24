@@ -590,7 +590,12 @@ class EditContext:
             return
         ppr = p.find(PPR)
         if ppr is not None and ppr.find(SECTPR) is not None:
-            return  # the paragraph carries a section break; keep it
+            # The paragraph carries a section break. An empty one (as
+            # insert_section_break writes) goes with its break, joining the
+            # section to the next; one with content keeps its mark.
+            if all(child.tag in (PPR, *MOVE_RANGE_STARTS, *MOVE_RANGE_ENDS) for child in p):
+                holder.remove(p)
+            return
         # A link or field whose text has gone is an empty shell, not content.
         for shell in [child for child in p if child.tag in (HYPERLINK, FLD_SIMPLE) and next(child.iter(R), None) is None]:
             p.remove(shell)

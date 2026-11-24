@@ -500,3 +500,133 @@ def test_accepting_a_deleted_paragraph_with_fields_or_links_leaves_nothing_behin
     assert document.read_part_xml(footer).count("<w:p>") == 1
     assert document.text() == "Body" and "<w:hyperlink" not in document.read_part_xml("word/document.xml")
     assert reopen_with_python_docx(document, tmp_path).sections[0].footer.paragraphs[0].text.startswith("Confidential")
+
+
+# ------------------------------------------------------------------ sections
+
+def three_paragraphs(doc):
+    return [doc.insert_paragraph(text) for text in ("Intro.", "Chapter one.", "Appendix.")]
+
+
+def test_section_break_splits_the_document_and_keeps_its_headers(doc, tmp_path):
+    intro, chapter, appendix = three_paragraphs(doc)
+    header = doc.set_header("Report")
+    assert doc.section_count() == 1
+    assert doc.insert_section_break(intro, start="continuous") == 2
+    sections = doc.sections()
+    assert [(s["section"], s["start"], s["start_type"]) for s in sections] == [(1, intro, "new_page"), (2, chapter, "continuous")]
+    assert sections[0]["end"] != intro  # the break paragraph ends section 1
+    assert [s["header"] for s in sections] == [{"default": {"part": header}}] * 2
+    outline = doc.outline()
+    assert outline[1]["preview"] == "[end of section 1]"
+    assert doc.read(outline[1]["id"], 1)["blocks"][0]["section_break"] == {"ends_section": 1}
+
+    reopened = reopen_with_python_docx(doc, tmp_path)
+    assert len(reopened.sections) == 2
+    assert [s.header.paragraphs[0].text for s in reopened.sections] == ["Report", "Report"]
+
+    with pytest.raises(DocumentError, match="already ends a section"):
+        doc.insert_section_break(outline[1]["id"])
+    with pytest.raises(DocumentError, match="Invalid start"):
+        doc.insert_section_break(chapter, start="sideways")
+    with pytest.raises(DocumentError, match="does not exist; the document has 2 sections"):
+        doc.set_header("x", section=3)
+
+
+def test_a_shared_header_is_copied_before_one_section_changes(doc, tmp_path):
+    intro, chapter, appendix = three_paragraphs(doc)
+    doc.set_header("Report")
+    doc.insert_section_break(chapter)
+    part = doc.set_header("Appendix", section=2)
+    assert part == "word/header2.xml"
+    assert [s["header"]["default"]["part"] for s in doc.sections()] == ["word/header1.xml", part]
+    assert [s["paragraphs"] for s in doc.stories()] == [["Report"], ["Appendix"]]
+    assert doc.set_header("Appendix A", section=2) == part  # now its own: rewritten in place
+    reopened = reopen_with_python_docx(doc, tmp_path)
+    assert [(s.header.is_linked_to_previous, s.header.paragraphs[0].text) for s in reopened.sections] == [
+        (False, "Report"), (False, "Appendix A")]
+
+
+def test_a_linked_section_gets_its_own_header_and_the_next_keeps_what_it_showed(doc, tmp_path):
+    intro, chapter, appendix = three_paragraphs(doc)
+    doc.insert_section_break(intro)
+    doc.insert_section_break(chapter)
+    doc.set_footer("Page {PAGE}")  # created on section 1; 2 and 3 show it through the link
+    assert [s["footer"]["default"].get("from_section") for s in doc.sections()] == [None, 1, 1]
+
+    middle = doc.set_footer("Chapter one", section=2)
+    assert [s["footer"]["default"] for s in doc.sections()] == [
+        {"part": "word/footer1.xml"}, {"part": middle}, {"part": "word/footer1.xml"}]  # section 3 pinned
+    doc.set_header("Chapter one", section=2)  # no header anywhere: section 3 gets a blank one
+    headers = [s["header"].get("default") for s in doc.sections()]
+    assert headers[0] is None and headers[1]["part"] != headers[2]["part"]
+
+    reopened = reopen_with_python_docx(doc, tmp_path)
+    assert [s.footer.paragraphs[0].text for s in reopened.sections] == ["Page ", "Chapter one", "Page "]
+    assert [s.header.is_linked_to_previous for s in reopened.sections] == [True, False, False]
+    assert [p.text for p in reopened.sections[2].header.paragraphs] == [""]
+    assert {s["part"]: s.get("sections") for s in doc.stories()}["word/footer1.xml"] == [1, 3]
+
+
+def test_a_first_page_header_for_one_section(doc, tmp_path):
+    intro, chapter, appendix = three_paragraphs(doc)
+    doc.insert_section_break(intro)
+    doc.set_header("", page="first", section=2)
+    assert [s["first_page_different"] for s in doc.sections()] == [False, True]
+    assert [s.different_first_page_header_footer for s in reopen_with_python_docx(doc, tmp_path).sections] == [False, True]
+
+
+# ----------------------------------------------------------------- footnotes
+
+def test_add_footnotes_and_endnotes(doc, tmp_path):
+    first = doc.insert_paragraph("Sales rose in 2024. Costs fell.")
+    second = doc.insert_paragraph("Outlook is good.")
+    assert doc.add_note(first, "Annual report, p. 4.", match="2024.") == "1"
+    assert doc.add_note(second, "Our estimate.\nSee the appendix.") == "2"
+    assert doc.add_note(second, "Method in the appendix.", kind="endnote") == "1"
+
+    assert doc.text() == "Sales rose in 2024. Costs fell.\nOutlook is good."  # marks have no text
+    p = doc.package.xml("word/document.xml").find(qn("w:body"))[0]
+    texts = [run.findtext(qn("w:t")) or run.find(qn("w:footnoteReference")).get(qn("w:id")) for run in p.iter(qn("w:r"))]
+    assert texts == ["Sales rose in ", "2024.", "1", " Costs fell."]
+    assert doc.read(second, 1)["blocks"][0]["notes"] == [
+        {"kind": "footnote", "id": "2", "text": "Our estimate.\nSee the appendix."},
+        {"kind": "endnote", "id": "1", "text": "Method in the appendix."},
+    ]
+    assert doc.outline()[0]["preview"] == "Sales rose in 2024. Costs fell. [footnote 1]"
+    notes = {s["part"]: s["notes"] for s in doc.stories()}
+    assert notes["word/footnotes.xml"] == [{"id": "1", "text": "Annual report, p. 4."},
+                                           {"id": "2", "text": "Our estimate.\nSee the appendix."}]
+    assert notes["word/endnotes.xml"] == [{"id": "1", "text": "Method in the appendix."}]
+
+    settings = doc.read_part_xml("word/settings.xml")
+    assert settings.index("defaultTabStop") < settings.index("w:footnotePr") < settings.index("w:endnotePr") < settings.index("w:compat")
+    styles = {s["name"] for s in doc.list_styles()}
+    assert {"footnote text", "footnote reference", "endnote text", "endnote reference"} <= styles
+    assert doc.replace_text("p. 4", "p. 5", ref="word/footnotes.xml") == 1
+
+    doc.set_paragraph_text(first, "Sales rose sharply.")  # the mark is kept
+    assert [n["id"] for n in doc.read(first, 1)["blocks"][0]["notes"]] == ["1"]
+
+    package = WordPackage.open(doc.save(tmp_path / "notes.docx"))
+    types = package.read_xml("[Content_Types].xml")
+    assert "footnotes+xml" in types and "endnotes+xml" in types
+    assert reopen_with_python_docx(doc, tmp_path).paragraphs[0].text == "Sales rose sharply."
+
+
+def test_delete_a_note_and_note_errors(doc):
+    block = doc.insert_paragraph("A claim.")
+    note = doc.add_note(block, "Source.")
+    doc.delete_note(note)
+    assert "notes" not in doc.read(block, 1)["blocks"][0]
+    assert {s["part"]: s["notes"] for s in doc.stories()}["word/footnotes.xml"] == []
+    with pytest.raises(DocumentError, match="No footnote with id '1'"):
+        doc.delete_note(note)
+    with pytest.raises(DocumentError, match="was not found"):
+        doc.add_note(block, "x", match="missing")
+    with pytest.raises(DocumentError, match="Invalid kind"):
+        doc.add_note(block, "x", kind="sidenote")
+    doc.set_header("Title")
+    with pytest.raises(DocumentError, match="only be added to body text"):
+        doc.add_note("word/header1.xml", "x")
+    assert doc.add_note(block, "Again.") == "1"  # the deleted note's id is free again

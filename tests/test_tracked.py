@@ -528,7 +528,8 @@ def test_stories_are_read_searched_and_replaced_as_tracked_changes(tmp_path):
     assert doc.stories() == [
         {"part": HEADER, "kind": "header", "paragraphs": ["Draft 2024 report"]},
         {"part": FOOTER, "kind": "footer", "paragraphs": ["Page of many"]},
-        {"part": NOTES, "kind": "footnotes", "paragraphs": [" See the 2024 survey."]},  # no separator
+        {"part": NOTES, "kind": "footnotes", "paragraphs": [" See the 2024 survey."],  # no separator
+         "notes": [{"id": "1", "text": "See the 2024 survey."}]},
     ]
     assert [hit["ref"] for hit in doc.search("2024")] == ["b1", HEADER, NOTES]
     footer_before = doc.package.part_bytes(FOOTER)
@@ -571,7 +572,7 @@ def test_story_tools():
     registry = ToolRegistry(default_tools(doc))
     listing = registry.execute("read_headers_footnotes", {})
     assert listing.splitlines() == [f"{HEADER} (header):", "  Draft 2024 report", f"{FOOTER} (footer):", "  Page of many",
-                                    f"{NOTES} (footnotes):", "   See the 2024 survey."]
+                                    f"{NOTES} (footnotes):", "  [1] See the 2024 survey."]
     assert registry.execute("replace_text", {"find": "Draft", "replace": "Final", "block": HEADER}) == "Replaced 1 occurrence(s)."
     assert f"in {HEADER}: 'Final'" in registry.execute("list_revisions", {})
     plain = ToolRegistry(default_tools(WordDocument.open()))
@@ -709,3 +710,52 @@ def test_moving_your_own_insertion_and_the_move_tool():
     assert "move by Agent in b2: 'two'" in listing and "move by Agent in its old place: 'two'" in listing
     doc.reject_revisions(author="Agent")
     assert doc.text() == "one\ntwo\nthree"
+
+
+# ------------------------------------------------------- sections and notes
+
+@pytest.mark.parametrize("accept", [True, False])
+def test_a_tracked_footnote_is_accepted_or_rejected(accept):
+    doc = tracked("<w:p><w:r><w:t>Sales rose.</w:t></w:r></w:p>")
+    note = doc.add_note("b1", "Annual report.")
+    revisions = doc.revisions()
+    assert [r["type"] for r in revisions] == ["insert"] * 4  # the mark in b1; the note's paragraph, number and text
+    assert [r.get("part") for r in revisions] == [None] + ["word/footnotes.xml"] * 3
+    mark = next(doc._body.iter(qn("w:footnoteReference")))
+    assert mark.getparent().getparent().tag == INS
+    notes_xml = doc.read_part_xml("word/footnotes.xml")
+    assert "<w:ins " in notes_xml and "Annual report." in notes_xml
+    if accept:
+        doc.accept_revisions()
+        assert [n["id"] for n in doc.read("b1", 1)["blocks"][0]["notes"]] == [note]
+        assert "<w:ins " not in doc.read_part_xml("word/footnotes.xml")
+    else:
+        doc.reject_revisions()
+        assert "notes" not in doc.read("b1", 1)["blocks"][0]
+    assert doc.revisions() == []
+
+
+def test_deleting_a_tracked_note_keeps_it_until_accepted():
+    doc = tracked("<w:p><w:r><w:t>Sales rose.</w:t></w:r></w:p>")
+    with doc.edits.untracked():
+        note = doc.add_note("b1", "Source.")
+    doc.delete_note(note)
+    assert "notes" not in doc.read("b1", 1)["blocks"][0]
+    assert [r["type"] for r in doc.revisions()] == ["delete"]
+    assert "Source." in doc.read_part_xml("word/footnotes.xml")  # rejecting brings the mark back to it
+    doc.reject_revisions()
+    assert [n["text"] for n in doc.read("b1", 1)["blocks"][0]["notes"]] == ["Source."]
+
+
+def test_a_tracked_section_break_and_section_header(tmp_path):
+    doc = tracked("<w:p><w:r><w:t>One.</w:t></w:r></w:p><w:p><w:r><w:t>Two.</w:t></w:r></w:p>")
+    with doc.edits.untracked():
+        doc.set_header("Report")
+    assert doc.insert_section_break("b1") == 2
+    assert [r["type"] for r in doc.revisions()] == ["insert"]  # the paragraph that ends section 1
+    doc.set_header("Part two", section=2)  # its copy of the shared header is rewritten as a revision
+    assert [s["paragraphs"] for s in doc.stories()] == [["Report"], ["Part two"]]
+    assert "Report</w:delText>" in doc.read_part_xml(doc.sections()[1]["header"]["default"]["part"])
+    assert len(reopen_with_python_docx(doc, tmp_path).sections) == 2
+    doc.reject_revisions()
+    assert doc.section_count() == 1 and doc.text() == "One.\nTwo."
