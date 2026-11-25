@@ -1,0 +1,122 @@
+instruction: >
+  This memo runs onto a second page. Shorten it so it fits on one page. Keep
+  every heading and the main point of each section, and do not change the
+  formatting or the page layout.
+input:
+  - title: Office move to Harbour Street
+  - heading: Background
+  - paragraph: >-
+      Our lease on the current building ends on 31 March, and after comparing
+      eleven options over the summer the leadership team chose the third and
+      fourth floors of 18 Harbour Street. The new space is about the same size
+      as what we have now, but it is laid out as open floors with a ring of
+      meeting rooms, it has far better natural light, and it is a five minute
+      walk from the central station instead of a twenty minute bus ride. The
+      landlord has agreed to a ten year lease with a break clause after five
+      years, and the rent per square metre is slightly lower than we pay today
+      once the service charge is included in both figures.
+  - heading: Timeline
+  - paragraph: >-
+      The fit-out starts on 6 January and is planned to take nine weeks. Teams
+      will move in two waves so that no team is without desks for more than a
+      single working day. Finance, legal and the people team move on the
+      weekend of 7 March, and everyone else moves on the weekend of 14 March.
+      The old building stays open until 28 March in case anything goes wrong
+      with the network or the phones, and the facilities team will be on site
+      in both buildings throughout that fortnight to answer questions and to
+      sort out any problems with access cards, lockers or parking permits.
+  - heading: What you need to do
+  - paragraph: >-
+      Before your team's moving weekend, pack your desk into the crates that
+      will be delivered to each floor two weeks ahead, label every crate with
+      your name and new desk number, and take home anything personal that you
+      do not want moved by the removal company. Laptops travel with you, not
+      in the crates. Paper files that nobody has opened in the last two years
+      should go into the confidential waste bins instead of being moved, and
+      the records team can help you decide what has to be kept and for how
+      long under our retention policy.
+  - heading: Travel and parking
+  - paragraph: >-
+      Harbour Street has no car park of its own, but the landlord has secured
+      twenty spaces in the multi-storey car park on Quay Road, which is a two
+      minute walk away. These spaces will go first to colleagues with a blue
+      badge or a medical need and then to those who live more than an hour
+      away by public transport; the facilities team will open applications in
+      February. There is a secure bike store in the basement with room for
+      sixty bikes, along with showers and lockers, and the company will match
+      the cost of a season ticket for anyone who switches from driving to the
+      train or bus in the first six months after the move.
+  - heading: Desks, IT and phones
+  - paragraph: >-
+      Every floor will use shared desks booked through the same app we use
+      today for meeting rooms, with a fixed desk kept for anyone who needs one
+      for health or accessibility reasons. Each desk has two screens, a
+      docking station and adjustable height, so bring only your laptop and
+      charger. Desk phones are being retired at the same time: calls will move
+      to the softphone on your laptop, and the IT team will run short training
+      sessions in February for anyone who has not used it before. The
+      network, printers and video rooms will be tested on the weekend before
+      the first wave moves in.
+  - heading: Questions
+  - paragraph: >-
+      The move team holds an open question session every Thursday at 12:30 in
+      the main meeting room until the move is finished, and the slides and
+      notes from each session are posted on the intranet the same afternoon.
+      If you have a question that cannot wait, or a need that we should plan
+      for, such as an accessible desk, a quiet room or a parking space, write
+      to the move team mailbox and someone will reply within two working days.
+      We will also send a short update by email at the end of every month.
+checks:
+  - page_count: 1
+  - heading_count: 6
+  - unchanged: [Background, Timeline, What you need to do, Travel and parking, "Desks, IT and phones", Questions, Office move to Harbour Street]
+  - text_contains: [Harbour Street, 7 March, 14 March]
+  - word_count: {min: 250}
+judge: >
+  The shortened memo still gives the reason for the move, both moving dates,
+  what staff must do before their move, parking and desk arrangements, and
+  how to ask questions. It reads
+  naturally and invents nothing.
+solution:
+  - update_paragraph:
+      block_id: b3
+      text: >-
+        Our lease ends on 31 March. After comparing eleven options, we chose
+        the third and fourth floors of 18 Harbour Street: the same size as now,
+        with better light, a five minute walk from the central station, and
+        slightly lower rent on a ten year lease with a break after five years.
+  - update_paragraph:
+      block_id: b5
+      text: >-
+        The fit-out starts on 6 January and takes nine weeks. Finance, legal
+        and the people team move on the weekend of 7 March, everyone else on
+        14 March. The old building stays open until 28 March, with facilities
+        staff on hand in both buildings.
+  - update_paragraph:
+      block_id: b7
+      text: >-
+        Before your moving weekend, pack your desk into the crates delivered
+        two weeks ahead and label each with your name and new desk number.
+        Take laptops and personal items with you. Old paper files go to
+        confidential waste; the records team can advise on what to keep.
+  - update_paragraph:
+      block_id: b9
+      text: >-
+        Twenty spaces in the Quay Road car park go first to blue badge holders
+        and long commutes; apply in February. There is a basement bike store
+        with showers, and we match a season ticket for anyone who switches to
+        the train or bus.
+  - update_paragraph:
+      block_id: b11
+      text: >-
+        Desks are shared and booked in the app, with fixed desks for health or
+        accessibility needs. Each has two screens and a dock, so bring only
+        your laptop. Desk phones are replaced by the laptop softphone, with
+        training in February.
+  - update_paragraph:
+      block_id: b13
+      text: >-
+        Bring questions to the open session every Thursday at 12:30 in the main
+        meeting room, or write to the move team mailbox for a reply within two
+        working days. Tell us early about needs such as an accessible desk or
+        a parking space.

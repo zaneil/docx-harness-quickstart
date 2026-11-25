@@ -21,8 +21,14 @@ Issues = "https://github.com/zaneil/docx-harness-quickstart/issues"
 [project.scripts]
 docx-harness = "docx_harness.cli:main"
 
+[project.optional-dependencies]
+render = [
+    "pypdfium2>=4.30",
+]
+
 [dependency-groups]
 dev = [
+    "pypdfium2>=4.30",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "python-docx>=1.1",

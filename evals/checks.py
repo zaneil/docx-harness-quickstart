@@ -18,7 +18,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable
 
-from docx_harness import WordDocument
+from docx_harness import WordDocument, render
 
 CHECKS: dict[str, Callable[["Context", Any], str | None]] = {}
 
@@ -93,6 +93,11 @@ class Context:
     @cached_property
     def text(self) -> str:
         return " ".join(self.lines)
+
+    @cached_property
+    def rendering(self) -> render.Rendering:
+        """The output laid out as pages by LibreOffice (raises RenderError without it)."""
+        return render.render(self.out_path)
 
 
 def run_checks(task_checks: list[tuple[str, Any]], ctx: Context) -> list[CheckResult]:
@@ -501,6 +506,31 @@ def section_header(ctx, argument):
         if not fold(first).startswith(fold(argument["starts_with"])):
             problems.append(f"starts with {first!r}, not {argument['starts_with']!r}")
     return f"section {number} {kind} ({text!r}): {'; '.join(problems)}" if problems else None
+
+
+# ----------------------------------------------------------------- layout
+# These lay the output out with LibreOffice (docx_harness.render). Without it
+# they fail with the install message, never pass.
+
+#: Checks that need the renderer.
+LAYOUT_CHECKS = {"page_count", "on_page"}
+
+
+@check("page_count")
+def page_count(ctx, argument):
+    """The output lays out as that many pages: a number or ``{min, max}``."""
+    return _in_range(ctx.rendering.page_count, argument, "pages")
+
+
+@check("on_page")
+def on_page(ctx, argument):
+    """``text`` first appears on ``page`` (from 1; a number or ``{min, max}``).
+    Header, footer and footnote text counts too."""
+    found = ctx.rendering.page_of(argument["text"])
+    if found is None:
+        return f"{argument['text']!r} is on no page of {ctx.rendering.page_count}"
+    message = _in_range(found, argument["page"], f"page of {argument['text']!r}")
+    return f"{message} (of {ctx.rendering.page_count})" if message else None
 
 
 # --------------------------------------------------------------- redlines

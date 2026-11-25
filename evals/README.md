@@ -104,10 +104,14 @@ Text is compared with curly quotes, long dashes and runs of spaces normalised. W
 | `header_contains: a` / `footer_contains: a` | The header or footer has the text |
 | `note: {text, after}` | A footnote containing `text` has its mark in the paragraph containing `after`. `kind: endnote` for an endnote |
 | `section_header: {section, contains, absent, starts_with}` | Section `section` (from 1) shows a header with the `contains` strings and none of `absent`, and its first paragraph starts with `starts_with`. `footer: true` checks the footer |
+| `page_count: 1` | The output lays out as that many pages in LibreOffice: a number or `{min, max}`. Needs LibreOffice |
+| `on_page: {text, page}` | The text first appears on that page (from 1; a number or `{min, max}`); header, footer and footnote text counts. Needs LibreOffice |
 | `revisions: 0` | That many pending tracked changes. `{author, type, min, max}` counts some (type: insert, delete, format, move) |
 | `reject_all_restores_input: true` | Rejecting the tracked changes gives back the input, so every edit was recorded. `{author: name}` rejects only theirs |
 
-Two checks run on every task without being listed: the agent finished (did not run out of steps), and the output opens with python-docx.
+Checks that run on every task without being listed: the agent finished (did not run out of steps), the output opens with python-docx, and, in live runs with LibreOffice installed, it lays out as pages (`renders_with_libreoffice`).
+
+The `layout` tasks use `page_count` and `on_page`, which lay the output out with LibreOffice (`docx_harness.render`). Without LibreOffice, `check` and `run` stop before starting when the selected tasks include them; leave them out with `--category` or `-k`, and `uv run pytest` skips them.
 
 ## Add a check or an input step
 

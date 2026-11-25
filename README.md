@@ -18,7 +18,7 @@ Use `docx-harness-quickstart` to **build a Python AI agent that creates or edits
 | Direct Python document editing without an LLM or API key | [Create and edit a DOCX without an LLM](docs/use-cases.md#create-and-edit-a-docx-without-an-llm) |
 | A review step before an agent changes a document | [Plan and approve document edits](docs/use-cases.md#plan-and-approve-document-edits) |
 
-The built-in semantic tools handle body paragraphs, tables, formatting, lists, links, pictures, headers and footers (per section), footnotes and endnotes, and can record edits as tracked changes. PDF rendering, page-layout inspection, comments, and legacy `.doc` files are outside the current scope. See [scope and limitations](#scope-and-limitations) before choosing it for a task.
+The built-in semantic tools handle body paragraphs, tables, formatting, lists, links, pictures, headers and footers (per section), footnotes and endnotes, and can record edits as tracked changes. Page layout can be checked with LibreOffice, optionally (see [Rendering](#rendering)); comments and legacy `.doc` files are outside the current scope. See [scope and limitations](#scope-and-limitations) before choosing it for a task.
 
 ## For coding agents
 
@@ -108,6 +108,22 @@ where type = 'tool_result' group by name order by calls desc;
 ```
 
 In your own code: `trace = JsonlTrace("run.jsonl")`, `trace.start(instruction)`, pass `on_event=trace.chain()` to `create_agent`, then `trace.end(result, llm.usage)`.
+
+### Rendering
+
+`docx_harness.render` lays a document out as pages with LibreOffice, so you can check page counts and what lands on which page. It is optional: install LibreOffice (`brew install --cask libreoffice`, or `apt install libreoffice-writer-nogui`) and `pip install "docx-harness[render]"` (pypdfium2). If `soffice` is not found, set `DOCX_HARNESS_SOFFICE` to it.
+
+```python
+from docx_harness import render
+
+pages = render.render(doc)         # a WordDocument, a path or .docx bytes; ~1 s
+pages.page_count                   # 2
+pages.page_of("Appendix")          # 2: the page where the text first appears
+pages.pages[0]                     # page 1's text, headers, footers and footnotes included
+pdf = render.to_pdf(doc)           # the PDF itself
+```
+
+LibreOffice is a close stand-in for Word, not Word: page and line breaks can differ a little. The evals use it for their layout checks; the agent does not use it yet.
 
 ## Architecture
 
@@ -307,7 +323,7 @@ Not covered: edits made through `write_part_xml`; accepting or rejecting tracked
 - Headers and footers: text, page-number fields, alignment and formatting, for all pages, the first page or even pages (even pages are a setting for the whole document). Without a section number they apply to the whole document; with one, only that section changes: a header it shares is copied first, and the section after it keeps what it showed. Section breaks can be inserted (new page, continuous, even or odd page); page size, margins and columns per section are not editable. Footnotes and endnotes: added after given text or at the end of a paragraph, deleted, and their text read, searched and replaced; note numbering format and placement settings are not editable.
 - Preserved on round trip but not editable through the semantic tools: comments, content controls. They can be reached through the raw part tools.
 - Output has been checked with python-docx and macOS `textutil`, not yet in Word itself. The tracked move and column markup, pictures, cell borders and header fields are the parts most likely to need adjusting.
-- There is no layout engine: the agent cannot know page counts or where lines break.
+- The agent cannot see page layout: it does not know page counts or where lines break. `docx_harness.render` can lay a document out with LibreOffice (optional), which the evals use.
 - A well-known style the file does not define (Title, Subtitle, Heading 1-9, List Bullet and List Number with their 2 and 3 variants, Quote, Caption, Header, Footer, Hyperlink, Table Grid) is added the first time it is asked for, in this library's version of its look, not the document theme's. Any other unknown name is an error listing the styles there are; define it with `create_style`.
 - Legacy `.doc` files are not supported.
 
@@ -321,20 +337,22 @@ Not covered: edits made through `write_part_xml`; accepting or rejecting tracked
 
 ## Evals
 
-`evals/` holds 21 tasks (drafting, targeted edits, restructuring, tables, redlines) that a real model does with these tools. Each task is graded by automatic checks on the saved document; tasks with a rubric also get a 1 to 5 score from a judge model, reported separately.
+`evals/` holds 25 tasks (drafting, targeted edits, restructuring, tables, redlines, page layout) that a real model does with these tools. Each task is graded by automatic checks on the saved document; tasks with a rubric also get a 1 to 5 score from a judge model, reported separately.
 
-| Model | Passed | Draft | Edit | Redline | Restructure | Tables | Steps per task | Tokens per task | Cost per task | Judge (1-5) |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `openai/gpt-6-luna` (default) | 20/21 (95%) | 3/4 | 5/5 | 4/4 | 4/4 | 4/4 | 3.8 | 15.2k | $0.0004 | 4.8 |
-| `openai/gpt-4.1-mini` (previous default) | 19/21 (90%) | 4/4 | 4/5 | 4/4 | 4/4 | 3/4 | 3.6 | 13.7k | $0.0023 | 5.0 |
+| Model | Passed | Draft | Edit | Layout | Redline | Restructure | Tables | Steps per task | Tokens per task | Cost per task | Judge (1-5) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `openai/gpt-6-luna` (default) | 24/25 (96%) | 3/4 | 6/6 | 2/2 | 4/4 | 5/5 | 4/4 | 4.1 | 18.6k | $0.0005 | 4.86 |
+| `openai/gpt-4.1-mini` (previous default, 21 tasks) | 19/21 (90%) | 4/4 | 4/5 | | 4/4 | 4/4 | 3/4 | 3.6 | 13.7k | $0.0023 | 5.0 |
 
-`openai/gpt-6-luna`: one run on 2026-11-23 through OpenRouter, judged by `openai/gpt-6.1-terra`; the one failure (`letter-header-footer`) left the recipient's name out of the letter. `openai/gpt-4.1-mini`: one run on 2026-11-17, judged by `openai/gpt-4.1`; its two failures (`add-link`, `totals-column`) passed on rerun. Each task runs once, so expect a task or so of difference between runs.
+`openai/gpt-6-luna`: one run on 2026-11-24 through OpenRouter, judged by `openai/gpt-6.1-terra`, with LibreOffice laying out every output; the one failure (`letter-header-footer`, as in its first run on 2026-11-23) left the recipient's name out of the letter. `openai/gpt-4.1-mini`: one run on 2026-11-17, judged by `openai/gpt-4.1`; its two failures (`add-link`, `totals-column`) passed on rerun. Each task runs once, so expect a task or so of difference between runs.
 
 ```bash
 uv run python -m evals run                          # default model; needs OPENROUTER_API_KEY
 uv run python -m evals run --model anthropic/claude-haiku-5.5   # another model; repeat --model for several
 uv run python -m evals check                        # offline: prove every task with its reference solution
 ```
+
+The `layout` tasks check page counts and need LibreOffice; without it, leave them out with `--category` or `-k`. When LibreOffice is installed, every live run also checks that each output lays out as pages.
 
 A task is one YAML file: an instruction, the starting document, the checks, and the tool calls that solve it. To add one, see [`evals/README.md`](evals/README.md).
 

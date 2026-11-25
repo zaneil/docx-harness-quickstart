@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from docx_harness import AgentEvent, LLMClient, ToolRegistry, WordDocument, create_agent, default_tools
+from docx_harness import AgentEvent, LLMClient, ToolRegistry, WordDocument, create_agent, default_tools, render
 
 from . import builder
 from .checks import CheckResult, Context, run_checks
@@ -60,9 +60,12 @@ def _open(task: Task, path: Path) -> WordDocument:
     return WordDocument.open(path, track_changes=task.track_changes, author=task.author)
 
 
-def grade(task: Task, out_path: Path, in_path: Path, status: str = "completed") -> list[CheckResult]:
-    """The task's checks, after two that apply to every task: the agent
-    finished, and the file opens in an independent reader."""
+def grade(task: Task, out_path: Path, in_path: Path, status: str = "completed", *,
+          check_rendering: bool = False) -> list[CheckResult]:
+    """The task's checks, after those that apply to every task: the agent
+    finished and the file opens in an independent reader. With
+    ``check_rendering`` (live runs), also that LibreOffice lays it out as
+    pages, when it is installed."""
     results = [CheckResult("finished", None, status == "completed",
                            "" if status == "completed" else f"the run ended with status {status!r}")]
     try:
@@ -75,7 +78,14 @@ def grade(task: Task, out_path: Path, in_path: Path, status: str = "completed") 
             results.append(CheckResult("opens_with_python_docx", None, True))
         except Exception as exc:  # noqa: BLE001 - any failure to open is the finding
             results.append(CheckResult("opens_with_python_docx", None, False, f"python-docx could not open it: {exc}"))
-    return results + run_checks(task.checks, Context(out_path, in_path))
+    ctx = Context(out_path, in_path)
+    if check_rendering and render.available():
+        try:
+            pages = ctx.rendering.page_count
+            results.append(CheckResult("renders_with_libreoffice", None, pages > 0, "" if pages else "no pages"))
+        except render.RenderError as exc:
+            results.append(CheckResult("renders_with_libreoffice", None, False, str(exc)))
+    return results + run_checks(task.checks, ctx)
 
 
 async def solve(task: Task, folder: Path) -> list[CheckResult]:
@@ -132,7 +142,9 @@ async def run_task(task: Task, llm: LLMClient, folder: Path, judge_llm: LLMClien
         result.status, result.steps, result.final_text = run.status, run.steps, run.final_text
         out_path = doc.save(folder / "output.docx")
         (folder / "trace.json").write_text(json.dumps(run.messages, indent=1, ensure_ascii=False), encoding="utf-8")
-        result.checks = [asdict(c) for c in grade(task, out_path, in_path, run.status)]
+        # Grading may lay the document out with LibreOffice: keep it off the event loop.
+        graded = await asyncio.to_thread(grade, task, out_path, in_path, run.status, check_rendering=True)
+        result.checks = [asdict(c) for c in graded]
         result.passed = all(c["passed"] for c in result.checks)
         if task.judge and judge_llm is not None:
             result.judge_score, result.judge_reason = await run_judge(
