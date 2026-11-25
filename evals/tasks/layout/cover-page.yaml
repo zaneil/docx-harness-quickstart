@@ -1,0 +1,25 @@
+instruction: >
+  Give this report a cover page: the title and subtitle on page 1 on their
+  own, with the Introduction starting at the top of page 2. Do not change
+  any of the text.
+input:
+  - title: Field Study 2026
+  - paragraph: Results and next steps
+    style: Subtitle
+  - heading: Introduction
+  - paragraph: >-
+      Over six weeks we visited forty stores in three regions and spoke with
+      their managers about stock levels, staffing and the new ordering tool.
+  - heading: Findings
+  - paragraph: >-
+      Stores that adopted the ordering tool early reported fewer empty
+      shelves and spent less time on manual counts.
+checks:
+  - on_page: {text: Field Study 2026, page: 1}
+  - on_page: {text: Results and next steps, page: 1}
+  - on_page: {text: Introduction, page: 2}
+  - page_count: 2
+  - unchanged_except: []
+  - block_count: 6
+solution:
+  - insert_page_break: {after: b2}

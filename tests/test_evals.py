@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from docx_harness import OpenAICompatibleClient
+from docx_harness import OpenAICompatibleClient, render
 
 from conftest import ScriptedLLM, assistant, call
 from evals import builder, checks, judge, report
@@ -20,18 +20,22 @@ from evals.loader import TaskError, load_tasks, parse_task, select
 from evals.runner import run_suite, verify
 
 TASKS = load_tasks()
+RENDERER = render.available()
+no_renderer = "LibreOffice or pypdfium2 is not installed"
 
 
 # ------------------------------------------------------------- task files
 
 def test_the_suite_has_tasks_in_every_category():
     assert len(TASKS) >= 20
-    assert {t.category for t in TASKS} == {"draft", "edit", "restructure", "tables", "redline"}
+    assert {t.category for t in TASKS} == {"draft", "edit", "restructure", "tables", "redline", "layout"}
     assert len({t.id for t in TASKS}) == len(TASKS)
 
 
 @pytest.mark.parametrize("task", TASKS, ids=lambda t: t.id)
 async def test_task_fails_untouched_and_passes_with_its_solution(task, tmp_path):
+    if not RENDERER and any(name in checks.LAYOUT_CHECKS for name, _ in task.checks):
+        pytest.skip(no_renderer)
     assert task.solution, "every bundled task needs a reference solution"
     assert await verify(task, tmp_path) == []
 
@@ -131,6 +135,8 @@ CASES = {
     "note": ({"text": "sign-off", "after": "review the handbook"}, {"text": "sign-off", "kind": "endnote"}),
     "section_header": ({"section": 2, "contains": "Acme appendix", "starts_with": "Details"},
                        {"section": 1, "absent": "Acme internal"}),
+    "page_count": (2, {"min": 3}),
+    "on_page": ({"text": "Details", "page": 2}, {"text": "Goals", "page": {"min": 2}}),
     "revisions": ({"author": "Alice", "type": "delete", "min": 2}, 0),
     "reject_all_restores_input": ({"author": "Alice"}, None),
 }
@@ -151,6 +157,8 @@ def test_every_check_has_a_case():
 
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_check_passes_and_fails(name, ctx):
+    if name in checks.LAYOUT_CHECKS and not RENDERER:
+        pytest.skip(no_renderer)
     passing, failing = CASES[name]
     assert checks.CHECKS[name](ctx, passing) is None
     if failing is not None:
@@ -343,3 +351,19 @@ async def test_client_sums_cost_when_the_provider_reports_it():
     await client.acomplete([{"role": "user", "content": "x"}])
     assert client.usage == {"prompt_tokens": 30, "completion_tokens": 15, "requests": 3, "cost": pytest.approx(0.003)}
 
+
+
+def test_layout_tasks_stop_early_without_the_renderer(monkeypatch, capsys):
+    monkeypatch.setattr(render, "available", lambda: False)
+    assert main(["check", "--category", "layout"]) == 2
+    err = capsys.readouterr().err
+    assert "cover-page, fit-one-page check page layout, which needs LibreOffice" in err
+    assert main(["run", "-k", "cover-page", "--no-judge"]) == 2  # before any model is called
+    assert main(["check", "fix-typos"]) == 0  # tasks without page checks are unaffected
+
+
+@pytest.mark.skipif(not RENDERER, reason=no_renderer)
+async def test_every_graded_task_is_rendered(tmp_path):
+    task = next(t for t in TASKS if t.id == "fix-typos")
+    results = await run_suite([task], lambda: solved(task), tmp_path)
+    assert {"name": "renders_with_libreoffice", "argument": None, "passed": True, "message": ""} in results[0].checks

@@ -18,10 +18,11 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from docx_harness import OpenRouterClient
+from docx_harness import OpenRouterClient, render
 from docx_harness.agent.llm import DEFAULT_MODEL
 
 from . import report
+from .checks import LAYOUT_CHECKS
 from .judge import DEFAULT_JUDGE_MODEL
 from .loader import TaskError, load_tasks, select
 from .runner import prepare, run_suite, verify
@@ -34,6 +35,17 @@ def _tasks(args) -> list:
     if not tasks:
         raise TaskError("no task matches; see 'python -m evals list'")
     return tasks
+
+
+def _require_renderer(tasks: list) -> None:
+    """Stop before any work when tasks check page layout and LibreOffice is missing."""
+    needing = [t.id for t in tasks if any(name in LAYOUT_CHECKS for name, _ in t.checks)]
+    if needing and not render.available():
+        raise TaskError(
+            f"{', '.join(needing)} check page layout, which needs LibreOffice and pypdfium2 "
+            "(brew install --cask libreoffice, or apt install libreoffice-writer-nogui; then uv sync). "
+            "Or leave them out with --category or -k."
+        )
 
 
 def cmd_list(args) -> int:
@@ -69,7 +81,9 @@ def cmd_show(args) -> int:
 def cmd_check(args) -> int:
     """Offline: every task's checks fail before its solution and pass after it."""
     failed = 0
-    for task in _tasks(args):
+    tasks = _tasks(args)
+    _require_renderer(tasks)
+    for task in tasks:
         with tempfile.TemporaryDirectory() as folder:
             problems = asyncio.run(verify(task, Path(folder)))
         if not task.solution:
@@ -84,6 +98,7 @@ def cmd_check(args) -> int:
 
 def cmd_run(args) -> int:
     tasks = _tasks(args)
+    _require_renderer(tasks)
     judge_model = None if args.no_judge else (
         args.judge_model or os.environ.get("DOCX_HARNESS_JUDGE_MODEL") or DEFAULT_JUDGE_MODEL)
     judge_llm = OpenRouterClient(model=judge_model) if judge_model and any(t.judge for t in tasks) else None

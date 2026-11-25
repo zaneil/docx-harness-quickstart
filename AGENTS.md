@@ -14,13 +14,14 @@ Three layers with a strict one-way dependency: `agent` → `tools` → `document
 | Tools | `src/docx_harness/tools/` | LLM-callable functions with JSON schemas, in groups (`default_tools(doc, groups=...)`) | `agent` |
 | Agent | `src/docx_harness/agent/` | Generic async tool-calling loop, plan mode, LLM client | `document` (it knows nothing about Word) |
 
-`src/docx_harness/api.py` wires the three together (`create_agent`, `draft`, `adraft`, `adraft_many`). `cli.py` is a thin front end over `api.py`. `demo/` (repo root) is a demo chat UI over the public API; it is not part of the library or the wheel.
+`src/docx_harness/api.py` wires the three together (`create_agent`, `draft`, `adraft`, `adraft_many`). `cli.py` is a thin front end over `api.py`. `render.py` (like `trace.py`) sits beside them: it lays a document out as pages with LibreOffice for the evals and tests, imports only `document`, and is optional (LibreOffice plus the `render` extra, pypdfium2). `demo/` (repo root) is a demo chat UI over the public API; it is not part of the library or the wheel.
 
 ## Commands
 
 ```bash
 uv sync                                   # install (creates .venv)
-uv run pytest                             # full test suite, about 3 seconds, no network or API key needed
+uv run pytest                             # full test suite, no network or API key needed; ~6 s, ~17 s with LibreOffice installed
+uv run pytest tests/test_render.py        # the renderer; skipped unless LibreOffice is installed
 uv run pytest tests/test_document.py -k replace   # one area
 uv run docx-harness "Draft a memo about X" -o memo.docx          # needs OPENROUTER_API_KEY in .env
 uv run docx-harness "Fix the typos" -i in.docx -o out.docx --plan
@@ -49,6 +50,7 @@ Run `uv run pytest` before finishing any change. Tests use a scripted fake model
 | Change how tracked changes (redlines) are recorded, accepted or rejected | `document/edits.py` (`EditContext`); listing and selection in `document/revisions.py` (`_resolve`); reading helpers in `document/ooxml.py` | `tests/test_tracked.py` |
 | Change the demo UI (not part of the library) | `demo/server.py`, `demo/chat.html` | `tests/test_ui.py` |
 | Add an eval task | One YAML file in `evals/tasks/<category>/` (format in `evals/README.md`); find block ids for its `solution` with `uv run python -m evals show <id>` | `uv run python -m evals check <id>`, `tests/test_evals.py` |
+| Change how documents are laid out as pages (LibreOffice, page text) | `render.py` (`to_pdf`, `read_pdf`, `Rendering.page_of`) | `tests/test_render.py` |
 | Add an eval check or input step | `evals/checks.py` (`@check`), `evals/builder.py` (`@step`); add a case to `CASES` in the test and a row in `evals/README.md` | `tests/test_evals.py` |
 
 ## Minimal usage, for writing code against it
@@ -116,6 +118,6 @@ doc.save("out.docx")
 - `WordDocument.open(path, track_changes=True, author=...)` records edits as revisions. A tracked-deleted block, table row or table cell (`w:cellDel`) stays in the XML but has no block id and is skipped by `_block_elements`, `tables.live_rows`, `tables.row_cells` and `_live_paragraphs`; do not iterate `w:p` / `w:tr` / `w:tc` directly when reading. While a tracked column deletion is pending, the `w:tblGrid` still has its column: map a grid column to it with `Grid.physical_of`. The same holds for the source half of a tracked move (`w:moveFrom`); a tracked move re-binds the block id to the copy at the destination. Setting `doc.track_changes` also writes `w:trackRevisions` to the settings part (skipped when the file has none).
 - `accept_revisions` / `reject_revisions` handle `w:ins`, `w:del`, `w:moveFrom` / `w:moveTo`, `w:cellIns` / `w:cellDel` and the `w:rPrChange`, `w:pPrChange`, `w:trPrChange`, `w:tcPrChange`, `w:tblPrChange` family. `w:cellMerge`, `w:sectPrChange`, `w:tblGridChange` and `w:numberingChange` are left in place, and `w:tblGridChange` is never written, so rejecting a tracked width change restores `w:tcW` but not the grid column values. Block ids can change after either call (a rejected deletion comes back under a new id).
 - Output is verified with python-docx and `textutil`, not in Word. python-docx does not see pictures or fields inside revision marks, so tracked tests check those through `WordDocument.read`.
-- No layout engine: page counts and line breaks are unknown.
+- No layout engine in the library or the agent: page counts and line breaks are unknown to them. `docx_harness.render` lays a file out with LibreOffice (a close stand-in for Word; page and line breaks can differ) for the evals and tests; nothing in `document`, `tools` or `agent` uses it. Render tests skip without LibreOffice, and layout eval tasks refuse to run.
 - A style the document lacks is created only when it is one of the well-known ones in `document/builtin_styles.py`; any other name raises `StyleError` listing the styles it has. `create_style` defines a new one.
 - Legacy `.doc` is not supported.
